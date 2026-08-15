@@ -585,3 +585,42 @@ class TestAirportDynamic:
         loaded = df.load_airport_cache(filepath=cache_file)
         assert loaded.get("GDN") == "Gdansk Lech Walesa"
         assert df.AIRPORT_CACHE.get("GDN") == "Gdansk Lech Walesa"
+
+
+class TestDaemonManagement:
+    def test_status_when_not_running(self, capsys):
+        with patch("delayed_flights.get_running_daemon_pid", return_value=None):
+            rc = df.main(["--status"])
+        assert rc == 0
+        assert "NIE jest uruchomiony" in capsys.readouterr().out
+
+    def test_status_when_running(self, capsys):
+        with patch("delayed_flights.get_running_daemon_pid", return_value=12345):
+            rc = df.main(["--status"])
+        assert rc == 0
+        assert "DZIAŁA w tle (PID: 12345)" in capsys.readouterr().out
+
+    def test_stop_when_not_running(self, capsys):
+        with patch("delayed_flights.get_running_daemon_pid", return_value=None):
+            rc = df.main(["--stop"])
+        assert rc == 0
+        assert "Brak aktywnego procesu" in capsys.readouterr().out
+
+    def test_logs_command(self, capsys, tmp_path):
+        log_file = tmp_path / "daemon.log"
+        log_file.write_text("line1\nline2\n")
+        with patch("delayed_flights.DAEMON_LOG_FILE", str(log_file)):
+            rc = df.main(["--logs"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "line1" in out and "line2" in out
+
+    def test_background_spawn(self, capsys):
+        mock_proc = MagicMock()
+        mock_proc.pid = 9999
+        with patch("delayed_flights.get_running_daemon_pid", return_value=None), \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("builtins.open", MagicMock()):
+            rc = df.main(["-a", "WAW", "-d", "-b"])
+        assert rc == 0
+        assert "PID: 9999" in capsys.readouterr().out

@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -395,6 +397,10 @@ examples:
   delay -a WAW -w 9                     # planned delays in next 9h
   delay -a WAW -d                       # daemon mode: check WAW every 30m indefinitely
   delay -a WAW -d -D 4h                 # daemon mode: run for 4 hours then exit
+  delay -a WAW -d -D 4h -b              # run daemon in background (-b), close terminal freely!
+  delay --status                        # check background daemon status
+  delay --logs                          # view background daemon logs
+  delay --stop                          # stop background daemon
   delay -a WAW -d -w 6 -i 15 -D 8h      # check every 15m for 8 hours total
   delay -a WAW -p                       # actual delays, last 24h
   delay -a LPA -p --all                 # all actual delayed, last 24h
@@ -415,6 +421,22 @@ examples:
     parser.add_argument(
         "-d", "--daemon", action="store_true", dest="daemon",
         help="Daemon mode: monitor airport periodically and send alerts to Telegram.",
+    )
+    parser.add_argument(
+        "-b", "--bg", "--background", action="store_true", dest="background",
+        help="Run daemon in background (detached process). Allows closing terminal safely.",
+    )
+    parser.add_argument(
+        "--stop", action="store_true", dest="stop",
+        help="Stop running background daemon.",
+    )
+    parser.add_argument(
+        "--status", action="store_true", dest="status",
+        help="Show status of background daemon.",
+    )
+    parser.add_argument(
+        "--logs", action="store_true", dest="logs",
+        help="Show recent logs from background daemon.",
     )
     parser.add_argument(
         "-D", "--duration", "--runtime", metavar="DURATION", dest="duration", default=None,
@@ -774,6 +796,141 @@ def iter_upcoming_delayed(
 
 
 # ---------------------------------------------------------------------------
+# Background daemon process management
+# ---------------------------------------------------------------------------
+
+DAEMON_PID_FILE = os.path.join(SCRIPT_DIR, ".daemon.pid")
+DAEMON_LOG_FILE = os.path.join(SCRIPT_DIR, "daemon.log")
+
+
+def is_pid_alive(pid: int) -> bool:
+    """Check if process with given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def get_running_daemon_pid() -> Optional[int]:
+    """Return PID of active background daemon if running."""
+    if os.path.exists(DAEMON_PID_FILE):
+        try:
+            with open(DAEMON_PID_FILE, "r") as f:
+                pid = int(f.read().strip())
+            if is_pid_alive(pid):
+                return pid
+        except Exception:
+            pass
+    return None
+
+
+def handle_stop_daemon() -> int:
+    """Stop currently running background daemon."""
+    pid = get_running_daemon_pid()
+    if pid is None:
+        print("Brak aktywnego procesu daemona w tle.")
+        if os.path.exists(DAEMON_PID_FILE):
+            try:
+                os.remove(DAEMON_PID_FILE)
+            except Exception:
+                pass
+        return 0
+    try:
+        os.kill(pid, signal.SIGTERM)
+        time.sleep(0.5)
+        if is_pid_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+        if os.path.exists(DAEMON_PID_FILE):
+            try:
+                os.remove(DAEMON_PID_FILE)
+            except Exception:
+                pass
+        print(f"✓ Zatrzymano proces daemona w tle (PID: {pid}).")
+        return 0
+    except Exception as exc:
+        print(f"Błąd podczas zatrzymywania procesu {pid}: {exc}", file=sys.stderr)
+        return 1
+
+
+def handle_status_daemon() -> int:
+    """Show live status of background daemon."""
+    pid = get_running_daemon_pid()
+    if pid is None:
+        print("Status: Daemon NIE jest uruchomiony.")
+        return 0
+    print(f"Status: Daemon DZIAŁA w tle (PID: {pid}).")
+    print(f"Plik logów: {DAEMON_LOG_FILE}")
+    if os.path.exists(DAEMON_LOG_FILE):
+        print("\n--- Ostatnie logi (ostatnie 10 linii) ---")
+        try:
+            with open(DAEMON_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+                for line in lines[-10:]:
+                    print(line.rstrip())
+        except Exception:
+            pass
+    return 0
+
+
+def handle_logs_daemon(tail: int = 30) -> int:
+    """Print recent logs from background daemon."""
+    if not os.path.exists(DAEMON_LOG_FILE):
+        print(f"Brak pliku logów ({DAEMON_LOG_FILE}).")
+        return 0
+    try:
+        with open(DAEMON_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+            for line in lines[-tail:]:
+                print(line.rstrip())
+    except Exception as exc:
+        print(f"Błąd odczytu logów: {exc}", file=sys.stderr)
+    return 0
+
+
+def spawn_background_daemon(argv: list[str]) -> int:
+    """Fork/spawn child process detached from terminal session."""
+    pid = get_running_daemon_pid()
+    if pid is not None:
+        print(f"⚠️ Daemon już działa w tle (PID: {pid}).")
+        print("  Sprawdzenie statusu: delay --status")
+        print("  Zatrzymanie:        delay --stop")
+        return 1
+
+    clean_args = [a for a in argv if a not in ("-b", "--bg", "--background")]
+    if "-d" not in clean_args and "--daemon" not in clean_args:
+        clean_args.append("-d")
+
+    cmd = [sys.executable, os.path.abspath(__file__)] + clean_args
+    try:
+        out_f = open(DAEMON_LOG_FILE, "a", encoding="utf-8")
+        out_f.write(f"\n=== Start daemona: {datetime.now(tz=timezone.utc).isoformat()} ===\n")
+        out_f.flush()
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=out_f,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,  # setsid: fully detached from terminal session
+        )
+        out_f.close()
+
+        with open(DAEMON_PID_FILE, "w") as pf:
+            pf.write(str(proc.pid))
+
+        print(f"✓ Uruchomiono daemon w tle (PID: {proc.pid})")
+        print(f"  Logi na żywo: delay --logs  (lub: tail -f {DAEMON_LOG_FILE})")
+        print(f"  Status:       delay --status")
+        print(f"  Zatrzymanie:  delay --stop")
+        print("  Możesz teraz bezpiecznie zamknąć terminal! 🚀")
+        return 0
+    except Exception as exc:
+        print(f"Nie udało się uruchomić procesu w tle: {exc}", file=sys.stderr)
+        return 1
+
+
+# ---------------------------------------------------------------------------
 # Daemon / Monitoring mode
 # ---------------------------------------------------------------------------
 
@@ -792,6 +949,13 @@ def run_daemon_loop(
     fetch_airport_info(session, api_key, airport)
     label = airport_label(airport)
 
+    my_pid = os.getpid()
+    try:
+        with open(DAEMON_PID_FILE, "w") as pf:
+            pf.write(str(my_pid))
+    except Exception:
+        pass
+
     daemon_start = datetime.now(tz=timezone.utc)
     deadline     = daemon_start + timedelta(seconds=duration_seconds) if duration_seconds else None
 
@@ -803,75 +967,84 @@ def run_daemon_loop(
         dur_h = duration_seconds / 3600
         print(f"  Czas działania:       {dur_h:.2f} h (do {deadline.strftime('%Y-%m-%d %H:%M:%S UTC') if deadline else ''})")
     else:
-        print("  Czas działania:       Bez limitu (do zatrzymania Ctrl+C)")
+        print("  Czas działania:       Bez limitu (do zatrzymania Ctrl+C lub delay --stop)")
 
     if bot_token and chat_id:
         print(f"  Powiadomienia:        Telegram (chat_id: {chat_id})")
     else:
         print("  Powiadomienia:        Tylko konsola (brak TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
-    print("  Naciśnij Ctrl+C aby zatrzymać monitorowanie.\n")
+    print("  Naciśnij Ctrl+C lub wpisz delay --stop aby zatrzymać monitorowanie.\n")
 
     notified_flights: set[str] = set()
 
-    while True:
-        cycle_start = datetime.now(tz=timezone.utc)
-        if deadline and cycle_start >= deadline:
-            print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
-            break
-
-        start = cycle_start
-        end   = cycle_start + timedelta(hours=hours)
-        ts_str = cycle_start.strftime("%Y-%m-%d %H:%M:%S UTC")
-        print(f"[{ts_str}] Sprawdzam odloty {airport} w oknie {start.strftime('%H:%M')} – {end.strftime('%H:%M UTC')}…")
-
-        stats = Stats()
-        try:
-            for flight in iter_upcoming_delayed(
-                session, api_key, airport, start, end, min_delay, stop_at_first=False, stats=stats
-            ):
-                flight_key = f"{flight.ident}_{flight.scheduled_off.isoformat() if flight.scheduled_off else ''}_{flight.delay_minutes}"
-                if flight_key not in notified_flights:
-                    notified_flights.add(flight_key)
-                    print(f"\n🚨 NOWE OPÓŹNIENIE ZNALEZIONE: {flight.ident} (+{flight.delay_minutes} min)")
-                    print(flight.display("UPCOMING DELAYED FLIGHT"))
-                    print()
-
-                    if bot_token and chat_id:
-                        msg = format_telegram_flight(flight)
-                        success = send_telegram_message(bot_token, chat_id, msg, session=session)
-                        if success:
-                            print(f"  ✓ Wysłano powiadomienie Telegram dla {flight.ident}")
-                        else:
-                            print(f"  ✗ Błąd wysyłania powiadomienia Telegram dla {flight.ident}", file=sys.stderr)
-
-            print(f"  Przeanalizowano {stats.flights_analyzed} lotów, znaleziono opóźnionych: {stats.flights_found}.")
-
-        except AppError as err:
-            print(f"  [BŁĄD API w cyklu]: {err}", file=sys.stderr)
-        except Exception as exc:
-            print(f"  [BŁĄD w cyklu]: {exc}", file=sys.stderr)
-
-        now_after = datetime.now(tz=timezone.utc)
-        if deadline and now_after >= deadline:
-            print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
-            break
-
-        # Calculate sleep seconds (don't sleep past deadline)
-        sleep_seconds = interval_minutes * 60
-        if deadline:
-            sec_left = int((deadline - now_after).total_seconds())
-            if sec_left <= 0:
+    try:
+        while True:
+            cycle_start = datetime.now(tz=timezone.utc)
+            if deadline and cycle_start >= deadline:
                 print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
                 break
-            sleep_seconds = min(sleep_seconds, sec_left)
 
-        mins = sleep_seconds // 60
-        secs = sleep_seconds % 60
-        time_msg = f"{mins} min" if secs == 0 else f"{mins} min {secs} s"
-        print(f"  Kolejne sprawdzenie za {time_msg}…\n")
+            start = cycle_start
+            end   = cycle_start + timedelta(hours=hours)
+            ts_str = cycle_start.strftime("%Y-%m-%d %H:%M:%S UTC")
+            print(f"[{ts_str}] Sprawdzam odloty {airport} w oknie {start.strftime('%H:%M')} – {end.strftime('%H:%M UTC')}…")
 
-        for _ in range(sleep_seconds):
-            time.sleep(1)
+            stats = Stats()
+            try:
+                for flight in iter_upcoming_delayed(
+                    session, api_key, airport, start, end, min_delay, stop_at_first=False, stats=stats
+                ):
+                    flight_key = f"{flight.ident}_{flight.scheduled_off.isoformat() if flight.scheduled_off else ''}_{flight.delay_minutes}"
+                    if flight_key not in notified_flights:
+                        notified_flights.add(flight_key)
+                        print(f"\n🚨 NOWE OPÓŹNIENIE ZNALEZIONE: {flight.ident} (+{flight.delay_minutes} min)")
+                        print(flight.display("UPCOMING DELAYED FLIGHT"))
+                        print()
+
+                        if bot_token and chat_id:
+                            msg = format_telegram_flight(flight)
+                            success = send_telegram_message(bot_token, chat_id, msg, session=session)
+                            if success:
+                                print(f"  ✓ Wysłano powiadomienie Telegram dla {flight.ident}")
+                            else:
+                                print(f"  ✗ Błąd wysyłania powiadomienia Telegram dla {flight.ident}", file=sys.stderr)
+
+                print(f"  Przeanalizowano {stats.flights_analyzed} lotów, znaleziono opóźnionych: {stats.flights_found}.")
+
+            except AppError as err:
+                print(f"  [BŁĄD API w cyklu]: {err}", file=sys.stderr)
+            except Exception as exc:
+                print(f"  [BŁĄD w cyklu]: {exc}", file=sys.stderr)
+
+            now_after = datetime.now(tz=timezone.utc)
+            if deadline and now_after >= deadline:
+                print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
+                break
+
+            # Calculate sleep seconds (don't sleep past deadline)
+            sleep_seconds = interval_minutes * 60
+            if deadline:
+                sec_left = int((deadline - now_after).total_seconds())
+                if sec_left <= 0:
+                    print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
+                    break
+                sleep_seconds = min(sleep_seconds, sec_left)
+
+            mins = sleep_seconds // 60
+            secs = sleep_seconds % 60
+            time_msg = f"{mins} min" if secs == 0 else f"{mins} min {secs} s"
+            print(f"  Kolejne sprawdzenie za {time_msg}…\n")
+
+            for _ in range(sleep_seconds):
+                time.sleep(1)
+    finally:
+        if os.path.exists(DAEMON_PID_FILE):
+            try:
+                with open(DAEMON_PID_FILE, "r") as pf:
+                    if pf.read().strip() == str(my_pid):
+                        os.remove(DAEMON_PID_FILE)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +1072,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code) if exc.code is not None else 1
+
+    # ── MANAGEMENT COMMANDS (--stop, --status, --logs) ────────────────────
+    if args.stop:
+        return handle_stop_daemon()
+    if args.status:
+        return handle_status_daemon()
+    if args.logs:
+        return handle_logs_daemon()
+
+    # ── BACKGROUND FORK (-b / --background) ───────────────────────────────
+    if args.background:
+        if not args.airport:
+            print("Błąd: podaj kod lotniska (-a/--airport) przy uruchamianiu w tle.", file=sys.stderr)
+            return 1
+        raw_args = sys.argv[1:] if argv is None else argv
+        return spawn_background_daemon(raw_args)
 
     # Show help when no airport given
     if not args.airport:

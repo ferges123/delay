@@ -51,14 +51,20 @@ TELEGRAM_CHAT_ID=123456789
 ### 1. Monitor / Daemon mode with Telegram alerts (`-d`)
 
 ```bash
-# Monitor Warsaw Chopin every 30 min for delays in the next 6 hours (indefinitely)
-delay -a WAW -d
+# Run daemon in the background (-b) for 4 hours (-D 4h) — safe to close terminal!
+delay -a TFS -d -D 4h -b
 
-# Monitor Warsaw Chopin for 4 hours total (-D 4h), checking every 15 min (-i 15) in next 6h window (-w 6)
-delay -a WAW -d -D 4h -i 15 -w 6
+# Check if background daemon is running + see recent logs
+delay --status
 
-# Monitor for 12 hours with custom delay threshold (e.g. >= 45 min)
-delay -a LPA -d -D 12h -w 6 -i 20 --min-delay 45
+# View live daemon logs
+delay --logs
+
+# Stop the background daemon
+delay --stop
+
+# Monitor Warsaw Chopin for 8 hours total, checking every 15 min in next 6h window
+delay -a WAW -d -D 8h -i 15 -w 6 -b
 ```
 
 ### 2. Single-run (Upcoming departures)
@@ -95,6 +101,10 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 |---|---|---|---|
 | `--airport` | `-a` | *None* | Airport IATA or ICAO code (required, e.g. `WAW`, `LPA`, `TFS`) |
 | `--daemon` | `-d` | *off* | Run continuous monitoring daemon |
+| `--background` | `-b`, `--bg` | *off* | Run daemon in background (detached process). Safe to close terminal |
+| `--status` | | | Show status of running background daemon |
+| `--logs` | | | View recent logs from background daemon |
+| `--stop` | | | Stop running background daemon |
 | `--duration` | `-D` | *None* | Total runtime duration for daemon mode (e.g. `4`, `4h`, `30m`, `1d`) |
 | `--hours` / `--window` | `-w` | `6` | Future window in hours for upcoming flights |
 | `--interval` | `-i` | `30` | Interval in minutes between checks in daemon mode |
