@@ -901,7 +901,10 @@ def spawn_background_daemon(argv: list[str]) -> int:
     if "-d" not in clean_args and "--daemon" not in clean_args:
         clean_args.append("-d")
 
-    cmd = [sys.executable, os.path.abspath(__file__)] + clean_args
+    # Pass -u (unbuffered) so all output writes to log file in real time
+    cmd = [sys.executable, "-u", os.path.abspath(__file__)] + clean_args
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+
     try:
         out_f = open(DAEMON_LOG_FILE, "a", encoding="utf-8")
         out_f.write(f"\n=== Start daemona: {datetime.now(tz=timezone.utc).isoformat()} ===\n")
@@ -912,6 +915,7 @@ def spawn_background_daemon(argv: list[str]) -> int:
             stdout=out_f,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
+            env=env,
             start_new_session=True,  # setsid: fully detached from terminal session
         )
         out_f.close()
@@ -1064,6 +1068,14 @@ def print_header(airport: str, start: datetime, end: datetime,
 # ---------------------------------------------------------------------------
 
 def main(argv: Optional[list[str]] = None) -> int:
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     load_dotenv()
     load_airport_cache()
 

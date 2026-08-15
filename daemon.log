@@ -1,0 +1,17 @@
+
+=== Start daemona: 2026-08-15T10:03:06.543139+00:00 ===
+
+=== Start daemona: 2026-08-15T11:22:59.362117+00:00 ===
+
+🚀 [DAEMON] Uruchomiono monitorowanie opóźnień dla TFS (Tenerife South Airport)
+  Okno przyszłości:     +6 h
+  Częstotliwość:        co 30 min
+  Minimalne opóźnienie: >= 60 min
+  Czas działania:       4.00 h (do 2026-08-15 15:22:59 UTC)
+  Powiadomienia:        Telegram (chat_id: 5198768706)
+  Naciśnij Ctrl+C lub wpisz delay --stop aby zatrzymać monitorowanie.
+
+[2026-08-15 11:22:59 UTC] Sprawdzam odloty TFS w oknie 11:22 – 17:22 UTC…
+  Przeanalizowano 39 lotów, znaleziono opóźnionych: 0.
+  Kolejne sprawdzenie za 30 min…
+
