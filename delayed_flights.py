@@ -324,6 +324,33 @@ class ValidationError(AppError):
     exit_code = 9
 
 
+def parse_duration_to_seconds(val: Optional[str | float]) -> Optional[int]:
+    """
+    Parse a duration string into total seconds.
+    Supported formats: '4', '4.5', '4h', '30m', '1d', '7200s'.
+    Default unit without suffix is hours.
+    """
+    if val is None:
+        return None
+    s = str(val).strip().lower()
+    if not s:
+        return None
+    try:
+        if s.endswith("m"):
+            return int(float(s[:-1]) * 60)
+        if s.endswith("h"):
+            return int(float(s[:-1]) * 3600)
+        if s.endswith("d"):
+            return int(float(s[:-1]) * 86400)
+        if s.endswith("s"):
+            return int(float(s[:-1]))
+        return int(float(s) * 3600)
+    except ValueError as exc:
+        raise ValidationError(
+            f"Invalid duration format '{val}'. Use e.g. '4', '4h', '30m', '1d'."
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # CLI argument parsing
 # ---------------------------------------------------------------------------
@@ -344,8 +371,9 @@ modes:
 examples:
   delay -a WAW                          # planned delays in next 6h
   delay -a WAW -w 9                     # planned delays in next 9h
-  delay -a WAW -d                       # daemon mode: check WAW every 30m, alert to Telegram
-  delay -a WAW -d -w 6 -i 15            # daemon mode: next 6h window, check every 15m
+  delay -a WAW -d                       # daemon mode: check WAW every 30m indefinitely
+  delay -a WAW -d -D 4h                 # daemon mode: run for 4 hours then exit
+  delay -a WAW -d -w 6 -i 15 -D 8h      # check every 15m for 8 hours total
   delay -a WAW -p                       # actual delays, last 24h
   delay -a LPA -p --all                 # all actual delayed, last 24h
   delay -a STN --min-delay 30           # planned delay >= 30 min
@@ -365,6 +393,10 @@ examples:
     parser.add_argument(
         "-d", "--daemon", action="store_true", dest="daemon",
         help="Daemon mode: monitor airport periodically and send alerts to Telegram.",
+    )
+    parser.add_argument(
+        "-D", "--duration", "--runtime", metavar="DURATION", dest="duration", default=None,
+        help="How long the daemon should run (e.g. '4', '4h', '30m', '1d'). Default: run indefinitely.",
     )
     parser.add_argument(
         "-w", "--hours", "--window", type=int, default=DEFAULT_FUTURE_H, metavar="HOURS", dest="hours",
@@ -720,25 +752,39 @@ def run_daemon_loop(
     min_delay: int,
     bot_token: Optional[str],
     chat_id: Optional[str],
+    duration_seconds: Optional[int] = None,
 ) -> None:
     """Continuous monitor loop checking every `interval_minutes` for delayed flights."""
     city  = AIRPORT_CITY.get(airport.upper(), "")
     label = f"{airport} ({city})" if city else airport
 
+    daemon_start = datetime.now(tz=timezone.utc)
+    deadline     = daemon_start + timedelta(seconds=duration_seconds) if duration_seconds else None
+
     print(f"\n🚀 [DAEMON] Uruchomiono monitorowanie opóźnień dla {label}")
-    print(f"  Okno przyszłości:   +{hours} h")
-    print(f"  Częstotliwość:      co {interval_minutes} min")
+    print(f"  Okno przyszłości:     +{hours} h")
+    print(f"  Częstotliwość:        co {interval_minutes} min")
     print(f"  Minimalne opóźnienie: >= {min_delay} min")
-    if bot_token and chat_id:
-        print(f"  Powiadomienia:      Telegram (chat_id: {chat_id})")
+    if duration_seconds:
+        dur_h = duration_seconds / 3600
+        print(f"  Czas działania:       {dur_h:.2f} h (do {deadline.strftime('%Y-%m-%d %H:%M:%S UTC') if deadline else ''})")
     else:
-        print("  Powiadomienia:      Tylko konsola (brak TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
+        print("  Czas działania:       Bez limitu (do zatrzymania Ctrl+C)")
+
+    if bot_token and chat_id:
+        print(f"  Powiadomienia:        Telegram (chat_id: {chat_id})")
+    else:
+        print("  Powiadomienia:        Tylko konsola (brak TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
     print("  Naciśnij Ctrl+C aby zatrzymać monitorowanie.\n")
 
     notified_flights: set[str] = set()
 
     while True:
         cycle_start = datetime.now(tz=timezone.utc)
+        if deadline and cycle_start >= deadline:
+            print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
+            break
+
         start = cycle_start
         end   = cycle_start + timedelta(hours=hours)
         ts_str = cycle_start.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -771,9 +817,25 @@ def run_daemon_loop(
         except Exception as exc:
             print(f"  [BŁĄD w cyklu]: {exc}", file=sys.stderr)
 
-        print(f"  Kolejne sprawdzenie za {interval_minutes} minut…\n")
-        # Sleep in 1-second chunks to exit immediately on Ctrl+C
+        now_after = datetime.now(tz=timezone.utc)
+        if deadline and now_after >= deadline:
+            print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
+            break
+
+        # Calculate sleep seconds (don't sleep past deadline)
         sleep_seconds = interval_minutes * 60
+        if deadline:
+            sec_left = int((deadline - now_after).total_seconds())
+            if sec_left <= 0:
+                print(f"\n⏰ [DAEMON] Osiągnięto limit czasu działania ({duration_seconds/3600:.2f} h). Zakończono monitorowanie.")
+                break
+            sleep_seconds = min(sleep_seconds, sec_left)
+
+        mins = sleep_seconds // 60
+        secs = sleep_seconds % 60
+        time_msg = f"{mins} min" if secs == 0 else f"{mins} min {secs} s"
+        print(f"  Kolejne sprawdzenie za {time_msg}…\n")
+
         for _ in range(sleep_seconds):
             time.sleep(1)
 
@@ -815,6 +877,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         min_delay = args.min_delay
         hours     = max(args.hours, 1)
         interval  = max(args.interval, 1)
+        duration_sec = parse_duration_to_seconds(args.duration)
 
         bot_token, chat_id = get_telegram_config()
 
@@ -835,6 +898,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     min_delay=min_delay,
                     bot_token=bot_token,
                     chat_id=chat_id,
+                    duration_seconds=duration_sec,
                 )
             return 0
 

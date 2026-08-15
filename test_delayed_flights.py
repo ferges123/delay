@@ -509,3 +509,36 @@ def test_daemon_args_conflict(monkeypatch):
     with patch("delayed_flights.load_dotenv"):
         rc = df.main(["-a", "WAW", "-d", "-p"])
     assert rc == df.ValidationError.exit_code
+
+
+class TestParseDuration:
+    def test_hours_float_and_int(self):
+        assert df.parse_duration_to_seconds("4") == 14400
+        assert df.parse_duration_to_seconds("1.5") == 5400
+        assert df.parse_duration_to_seconds(2) == 7200
+
+    def test_suffix_h_m_d_s(self):
+        assert df.parse_duration_to_seconds("4h") == 14400
+        assert df.parse_duration_to_seconds("30m") == 1800
+        assert df.parse_duration_to_seconds("1d") == 86400
+        assert df.parse_duration_to_seconds("120s") == 120
+
+    def test_none_and_empty(self):
+        assert df.parse_duration_to_seconds(None) is None
+        assert df.parse_duration_to_seconds("") is None
+
+    def test_invalid_raises(self):
+        with pytest.raises(df.ValidationError, match="Invalid duration"):
+            df.parse_duration_to_seconds("invalid_duration")
+
+
+def test_daemon_duration_exits(monkeypatch):
+    """Daemon mode with small duration exits after deadline."""
+    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
+    page = _page([], key="scheduled_departures")
+
+    with patch("delayed_flights._request_page", return_value=page), \
+         patch("time.sleep"):
+        # duration = 1s -> should execute and exit
+        rc = df.main(["-a", "WAW", "-d", "-D", "1s", "-i", "1"])
+    assert rc == 0

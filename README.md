@@ -51,14 +51,14 @@ TELEGRAM_CHAT_ID=123456789
 ### 1. Monitor / Daemon mode with Telegram alerts (`-d`)
 
 ```bash
-# Monitor Warsaw Chopin every 30 min for delays in the next 6 hours
+# Monitor Warsaw Chopin every 30 min for delays in the next 6 hours (indefinitely)
 delay -a WAW -d
 
-# Custom window: check next 8 hours every 15 minutes
-delay -a WAW -d -w 8 -i 15
+# Monitor Warsaw Chopin for 4 hours total (-D 4h), checking every 15 min (-i 15) in next 6h window (-w 6)
+delay -a WAW -d -D 4h -i 15 -w 6
 
-# Monitor with custom delay threshold (e.g. >= 45 min)
-delay -a LPA -d -w 6 -i 20 --min-delay 45
+# Monitor for 12 hours with custom delay threshold (e.g. >= 45 min)
+delay -a LPA -d -D 12h -w 6 -i 20 --min-delay 45
 ```
 
 ### 2. Single-run (Upcoming departures)
@@ -95,6 +95,7 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 |---|---|---|---|
 | `--airport` | `-a` | *None* | Airport IATA or ICAO code (required, e.g. `WAW`, `LPA`, `TFS`) |
 | `--daemon` | `-d` | *off* | Run continuous monitoring daemon |
+| `--duration` | `-D` | *None* | Total runtime duration for daemon mode (e.g. `4`, `4h`, `30m`, `1d`) |
 | `--hours` / `--window` | `-w` | `6` | Future window in hours for upcoming flights |
 | `--interval` | `-i` | `30` | Interval in minutes between checks in daemon mode |
 | `--past` | `-p` | *off* | Search past 24h for actual delayed departures |
