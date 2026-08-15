@@ -350,7 +350,7 @@ examples:
   delay -a LPA -p --all                 # all actual delayed, last 24h
   delay -a STN --min-delay 30           # planned delay >= 30 min
   delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
-  delay -a WAW --telegram               # send single run results to Telegram
+  delay -a WAW -t                       # send single run results to Telegram (-t)
   delay -a WAW --json                   # JSON output
         """,
     )
@@ -375,7 +375,7 @@ examples:
         help=f"Daemon check interval in minutes (default: {DEFAULT_INTERVAL}m).",
     )
     parser.add_argument(
-        "--telegram", action="store_true", dest="telegram",
+        "-t", "--telegram", action="store_true", dest="telegram",
         help="Send delayed flights alerts to Telegram (requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID).",
     )
     parser.add_argument(

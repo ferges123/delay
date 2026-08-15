@@ -71,7 +71,7 @@ delay -a WAW
 delay -a WAW -w 9 --all
 
 # Single run with Telegram alert
-delay -a WAW --telegram
+delay -a WAW -t
 
 # JSON format
 delay -a WAW --json
@@ -98,7 +98,7 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 | `--hours` / `--window` | `-w` | `6` | Future window in hours for upcoming flights |
 | `--interval` | `-i` | `30` | Interval in minutes between checks in daemon mode |
 | `--past` | `-p` | *off* | Search past 24h for actual delayed departures |
-| `--telegram` | | *off* | Send alert to Telegram for delayed flights |
+| `--telegram` | `-t` | *off* | Send alert to Telegram for delayed flights |
 | `--min-delay` | | `60` | Minimum delay threshold in minutes |
 | `--all` | | *off* | Return all delayed flights instead of stopping after first |
 | `--json` | | *off* | Format output as JSON |

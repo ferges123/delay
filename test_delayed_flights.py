@@ -486,6 +486,24 @@ def test_main_telegram_dispatch(monkeypatch):
     mock_send.assert_called_once()
 
 
+def test_main_telegram_dispatch_shorthand_t(monkeypatch):
+    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:TOKEN")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+
+    now = datetime.now(tz=timezone.utc)
+    future_time = (now + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    raw = _make_raw_flight("LO888", scheduled_off=future_time, actual_off=None, departure_delay=5400)
+    page = _page([raw], key="scheduled_departures")
+
+    with patch("delayed_flights._request_page", return_value=page), \
+         patch("delayed_flights.send_telegram_message", return_value=True) as mock_send:
+        rc = df.main(["-a", "WAW", "-t"])
+
+    assert rc == 0
+    mock_send.assert_called_once()
+
+
 def test_daemon_args_conflict(monkeypatch):
     monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
     with patch("delayed_flights.load_dotenv"):
