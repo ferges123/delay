@@ -31,7 +31,10 @@ coverage.xml
 *.swp
 *.swo
 
-# Local cache
+# Local cache and daemon runtime files
 *.cache/
 .airports_cache.json
 airports.json
+.daemon.pid
+*.log
+daemon.log
