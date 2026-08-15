@@ -53,81 +53,62 @@ DEFAULT_FUTURE_H  = 6       # hours ahead for upcoming / daemon mode
 DEFAULT_INTERVAL  = 30      # minutes between checks in daemon mode
 
 # ---------------------------------------------------------------------------
-# Airport label lookup – accepts IATA (3-letter) or ICAO (4-letter) codes.
+# Dynamic Airport Cache & Resolver (retrieved from AeroAPI responses / endpoints)
 # ---------------------------------------------------------------------------
 
-AIRPORT_CITY: dict[str, str] = {
-    # Canary Islands
-    "TFS": "Tenerife South",    "GCTS": "Tenerife South",
-    "TFN": "Tenerife North",    "GCXO": "Tenerife North",
-    "SPC": "La Palma",          "GCLA": "La Palma",
-    "ACE": "Lanzarote",         "GCRR": "Lanzarote",
-    "FUE": "Fuerteventura",     "GCFV": "Fuerteventura",
-    "LPA": "Gran Canaria",      "GCLP": "Gran Canaria",
-    # Spain
-    "MAD": "Madrid",            "LEMD": "Madrid",
-    "BCN": "Barcelona",         "LEBL": "Barcelona",
-    "ALC": "Alicante",          "LEAL": "Alicante",
-    "AGP": "Malaga",            "LEMG": "Malaga",
-    "PMI": "Palma de Mallorca", "LEPA": "Palma de Mallorca",
-    "IBZ": "Ibiza",             "LEIB": "Ibiza",
-    "SVQ": "Seville",           "LEZL": "Seville",
-    "VLC": "Valencia",          "LEVC": "Valencia",
-    # UK
-    "LHR": "London Heathrow",   "EGLL": "London Heathrow",
-    "LGW": "London Gatwick",    "EGKK": "London Gatwick",
-    "STN": "London Stansted",   "EGSS": "London Stansted",
-    "LTN": "London Luton",      "EGGW": "London Luton",
-    "MAN": "Manchester",        "EGCC": "Manchester",
-    "EDI": "Edinburgh",         "EGPH": "Edinburgh",
-    "BHX": "Birmingham",        "EGBB": "Birmingham",
-    # Netherlands / France / Germany / Italy / Austria
-    "AMS": "Amsterdam",         "EHAM": "Amsterdam",
-    "CDG": "Paris CDG",         "LFPG": "Paris CDG",
-    "ORY": "Paris Orly",        "LFPO": "Paris Orly",
-    "FRA": "Frankfurt",         "EDDF": "Frankfurt",
-    "MUC": "Munich",            "EDDM": "Munich",
-    "BER": "Berlin",            "EDDB": "Berlin",
-    "DUS": "Dusseldorf",        "EDDL": "Dusseldorf",
-    "FCO": "Rome Fiumicino",    "LIRF": "Rome Fiumicino",
-    "MXP": "Milan Malpensa",    "LIMC": "Milan Malpensa",
-    "VIE": "Vienna",            "LOWW": "Vienna",
-    # Poland
-    "WAW": "Warsaw",            "EPWA": "Warsaw",
-    "KRK": "Krakow",            "EPKK": "Krakow",
-    "GDN": "Gdansk",            "EPGD": "Gdansk",
-    "KTW": "Katowice",          "EPKT": "Katowice",
-    "POZ": "Poznan",            "EPPO": "Poznan",
-    "WRO": "Wroclaw",           "EPWR": "Wroclaw",
-    "LCJ": "Lodz",              "EPLL": "Lodz",
-    "RZE": "Rzeszow",           "EPRZ": "Rzeszow",
-    "BZG": "Bydgoszcz",         "EPBY": "Bydgoszcz",
-    "SZZ": "Szczecin",          "EPSC": "Szczecin",
-    "LUZ": "Lublin",            "EPLB": "Lublin",
-    # Scandinavia
-    "CPH": "Copenhagen",        "EKCH": "Copenhagen",
-    "ARN": "Stockholm Arlanda", "ESSA": "Stockholm Arlanda",
-    "OSL": "Oslo",              "ENGM": "Oslo",
-    "HEL": "Helsinki",          "EFHK": "Helsinki",
-    # Turkey / Middle East
-    "IST": "Istanbul",          "LTFM": "Istanbul",
-    "DXB": "Dubai",             "OMDB": "Dubai",
-    # Americas / Asia / Oceania
-    "JFK": "New York JFK",      "KJFK": "New York JFK",
-    "LAX": "Los Angeles",       "KLAX": "Los Angeles",
-    "ORD": "Chicago O'Hare",    "KORD": "Chicago O'Hare",
-    "PEK": "Beijing",           "ZBAA": "Beijing",
-    "HKG": "Hong Kong",         "VHHH": "Hong Kong",
-    "SYD": "Sydney",            "YSSY": "Sydney",
-}
+AIRPORT_CACHE: dict[str, str] = {}
 
 
-def airport_label(code: Optional[str], name: Optional[str], city: Optional[str]) -> str:
-    """Return 'CODE (City Name)' or just 'CODE'."""
+def cache_airport(code: Optional[str], name: Optional[str] = None, city: Optional[str] = None) -> None:
+    """Cache airport display label dynamically from API data."""
+    if not code:
+        return
+    code_upper = code.strip().upper()
+    display = name or city
+    if display:
+        AIRPORT_CACHE[code_upper] = display
+
+
+def fetch_airport_info(
+    session: requests.Session,
+    api_key: str,
+    airport_code: str,
+) -> dict[str, Any]:
+    """Fetch airport details from GET /airports/{id} and cache the official name/city."""
+    code_upper = airport_code.strip().upper()
+    if code_upper in AIRPORT_CACHE:
+        return {"name": AIRPORT_CACHE[code_upper]}
+
+    url = f"{BASE_URL}/airports/{code_upper}"
+    try:
+        resp = session.get(url, headers=_make_headers(api_key), timeout=REQUEST_TIMEOUT)
+        if resp.status_code == 200:
+            data = resp.json()
+            name = data.get("name")
+            city = data.get("city")
+            display = name or city
+            if display:
+                AIRPORT_CACHE[code_upper] = display
+                if data.get("code_icao"):
+                    AIRPORT_CACHE[data["code_icao"].upper()] = display
+                if data.get("code_iata"):
+                    AIRPORT_CACHE[data["code_iata"].upper()] = display
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def airport_label(code: Optional[str], name: Optional[str] = None, city: Optional[str] = None) -> str:
+    """Return 'CODE (Airport Name / City)' or just 'CODE' dynamically from AeroAPI data."""
     if not code:
         return "Unknown"
-    display = name or city or AIRPORT_CITY.get(code.upper())
-    return f"{code} ({display})" if display else code
+    code_upper = code.strip().upper()
+    display = name or city or AIRPORT_CACHE.get(code_upper)
+    if display:
+        cache_airport(code_upper, display)
+        return f"{code} ({display})"
+    return code
 
 
 def fmt_local(dt: Optional[datetime], tz_name: Optional[str]) -> str:
@@ -138,6 +119,13 @@ def fmt_local(dt: Optional[datetime], tz_name: Optional[str]) -> str:
     if dt is None:
         return "N/A"
     utc_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+    if tz_name and ZoneInfo is not None:
+        try:
+            local_dt = dt.astimezone(ZoneInfo(tz_name))
+            return f"{utc_str}  ({local_dt.strftime('%H:%M')} {local_dt.strftime('%Z')})"
+        except (ZoneInfoNotFoundError, Exception):
+            pass
+    return utc_str
     if tz_name and ZoneInfo is not None:
         try:
             local_dt = dt.astimezone(ZoneInfo(tz_name))
@@ -600,17 +588,29 @@ def _build_flight(raw: dict, airport: str, is_past: bool) -> Optional[Flight]:
             return None
         delay_minutes = int(dep_delay_sec / 60)
 
+    origin_code = origin.get("code") or origin.get("code_icao") or airport
+    origin_name = origin.get("name")
+    origin_city = origin.get("city")
+    if origin_code:
+        cache_airport(origin_code, origin_name, origin_city)
+
+    dest_code = destination.get("code") or destination.get("code_icao")
+    dest_name = destination.get("name")
+    dest_city = destination.get("city")
+    if dest_code:
+        cache_airport(dest_code, dest_name, dest_city)
+
     return Flight(
         ident            = raw.get("ident", "Unknown"),
         ident_iata       = raw.get("ident_iata"),
         ident_icao       = raw.get("ident_icao"),
-        origin_code      = origin.get("code") or origin.get("code_icao") or airport,
-        origin_name      = origin.get("name"),
-        origin_city      = origin.get("city"),
+        origin_code      = origin_code,
+        origin_name      = origin_name,
+        origin_city      = origin_city,
         origin_tz        = origin.get("timezone"),
-        destination_code = destination.get("code") or destination.get("code_icao"),
-        destination_name = destination.get("name"),
-        destination_city = destination.get("city"),
+        destination_code = dest_code,
+        destination_name = dest_name,
+        destination_city = dest_city,
         destination_tz   = destination.get("timezone"),
         scheduled_off    = scheduled_off,
         estimated_off    = estimated_off,
@@ -755,8 +755,8 @@ def run_daemon_loop(
     duration_seconds: Optional[int] = None,
 ) -> None:
     """Continuous monitor loop checking every `interval_minutes` for delayed flights."""
-    city  = AIRPORT_CITY.get(airport.upper(), "")
-    label = f"{airport} ({city})" if city else airport
+    fetch_airport_info(session, api_key, airport)
+    label = airport_label(airport)
 
     daemon_start = datetime.now(tz=timezone.utc)
     deadline     = daemon_start + timedelta(seconds=duration_seconds) if duration_seconds else None
@@ -846,8 +846,7 @@ def run_daemon_loop(
 
 def print_header(airport: str, start: datetime, end: datetime,
                  min_delay: int, mode: str) -> None:
-    city  = AIRPORT_CITY.get(airport.upper(), "")
-    label = f"{airport} ({city})" if city else airport
+    label = airport_label(airport)
     print(f"\n{label}  –  {mode}")
     print(f"  Window:    {start.strftime('%Y-%m-%d %H:%M UTC')} → {end.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  Min delay: {min_delay} min\n")
@@ -942,13 +941,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             iterator_fn = iter_upcoming_delayed
             stop_first  = not args.show_all
 
-        if not args.output_json:
-            print_header(airport, start, end, min_delay, mode_label)
-
         stats         = Stats()
         found_flights: list[Flight] = []
 
         with requests.Session() as session:
+            fetch_airport_info(session, api_key, airport)
+            if not args.output_json:
+                print_header(airport, start, end, min_delay, mode_label)
+
             for flight in iterator_fn(
                 session, api_key, airport, start, end, min_delay, stop_first, stats
             ):

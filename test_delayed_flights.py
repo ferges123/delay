@@ -542,3 +542,33 @@ def test_daemon_duration_exits(monkeypatch):
         # duration = 1s -> should execute and exit
         rc = df.main(["-a", "WAW", "-d", "-D", "1s", "-i", "1"])
     assert rc == 0
+
+
+class TestAirportDynamic:
+    def test_airport_label_with_name_and_city(self):
+        label = df.airport_label("WAW", "Warsaw Chopin", "Warsaw")
+        assert label == "WAW (Warsaw Chopin)"
+        assert df.AIRPORT_CACHE.get("WAW") == "Warsaw Chopin"
+
+    def test_airport_label_uses_cached_value(self):
+        df.cache_airport("KRK", "Krakow John Paul II")
+        label = df.airport_label("KRK")
+        assert label == "KRK (Krakow John Paul II)"
+
+    def test_airport_label_none_and_unknown(self):
+        assert df.airport_label(None) == "Unknown"
+        assert df.airport_label("XYZ999") == "XYZ999"
+
+    @resp_lib.activate
+    def test_fetch_airport_info_success(self, env_key):
+        resp_lib.add(
+            resp_lib.GET,
+            f"{BASE}/airports/TFS",
+            json={"name": "Tenerife South Airport", "city": "Tenerife", "code_icao": "GCTS", "code_iata": "TFS"},
+            status=200,
+        )
+        with requests.Session() as s:
+            info = df.fetch_airport_info(s, API_KEY, "TFS")
+        assert info["name"] == "Tenerife South Airport"
+        assert df.AIRPORT_CACHE.get("TFS") == "Tenerife South Airport"
+        assert df.AIRPORT_CACHE.get("GCTS") == "Tenerife South Airport"
