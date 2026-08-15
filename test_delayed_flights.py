@@ -1,569 +1,536 @@
 """
-Tests for delayed_flights.py
+Tests for delayed_flights.py v0.0.1
 
-All AeroAPI HTTP calls are mocked – no real network requests are made.
+All AeroAPI HTTP calls are mocked – no real network requests.
 """
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime, timedelta, timezone
-from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import responses as resp_lib
-from responses import RequestsMock
 
 import delayed_flights as df
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Shared fixtures / helpers
 # ---------------------------------------------------------------------------
 
 API_KEY = "test_key_123"
-BASE = "https://aeroapi.flightaware.com/aeroapi"
-DEPARTURES_URL = f"{BASE}/airports/GCTS/flights/departures"
+BASE    = "https://aeroapi.flightaware.com/aeroapi"
+PAST_URL     = f"{BASE}/airports/WAW/flights/departures"
+UPCOMING_URL = f"{BASE}/airports/WAW/flights/scheduled_departures"
 
-NOW_UTC = datetime(2026, 8, 14, 12, 0, 0, tzinfo=timezone.utc)   # fixed "now"
-START   = NOW_UTC - timedelta(hours=48)
-END     = NOW_UTC - timedelta(hours=24)
+NOW_UTC = datetime(2026, 8, 14, 12, 0, 0, tzinfo=timezone.utc)
+START   = NOW_UTC - timedelta(hours=24)
+END     = NOW_UTC
 
 
-def _make_flight(
-    ident: str = "VY1234",
-    scheduled_off: str = "2026-08-13T10:00:00Z",
-    actual_off: str | None = "2026-08-13T11:05:00Z",
+def _make_raw_flight(
+    ident: str = "LO123",
+    scheduled_off: str = "2026-08-14T10:00:00Z",
+    actual_off:    str | None = "2026-08-14T11:05:00Z",
     estimated_off: str | None = None,
-    dest_code: str = "LEBL",
-    dest_name: str = "Barcelona",
-    dest_city: str = "Barcelona",
+    departure_delay: int | None = None,   # seconds; for upcoming mode
+    dest_code: str = "EGSS",
 ) -> dict:
     return {
-        "ident": ident,
-        "ident_iata": ident,
-        "ident_icao": ident,
-        "fa_flight_id": f"FA{ident}",
-        "operator": "VLG",
-        "operator_iata": "VY",
-        "flight_number": ident[2:],
-        "registration": "EC-MYB",
-        "atc_ident": None,
+        "ident":          ident,
+        "ident_iata":     ident,
+        "ident_icao":     ident,
+        "fa_flight_id":   f"FA{ident}",
+        "operator":       "LOT",
+        "operator_iata":  "LO",
+        "flight_number":  ident[2:],
+        "registration":   "SP-LRA",
+        "atc_ident":      None,
         "inbound_fa_flight_id": None,
-        "codeshares": [],
-        "codeshares_iata": [],
-        "blocked": False,
-        "diverted": False,
-        "cancelled": False,
-        "position_only": False,
+        "codeshares":     [],
+        "codeshares_iata":[],
+        "blocked":        False,
+        "diverted":       False,
+        "cancelled":      False,
+        "position_only":  False,
         "origin": {
-            "code": "GCTS",
-            "code_icao": "GCTS",
-            "code_iata": "TFS",
-            "name": "Tenerife South",
-            "city": "Tenerife",
-            "timezone": "Atlantic/Canary",
-            "airport_info_url": "/airports/GCTS",
+            "code":      "WAW",
+            "code_icao": "EPWA",
+            "code_iata": "WAW",
+            "name":      "Warsaw Chopin",
+            "city":      "Warsaw",
+            "timezone":  "Europe/Warsaw",
+            "airport_info_url": "/airports/EPWA",
         },
         "destination": {
-            "code": dest_code,
+            "code":      dest_code,
             "code_icao": dest_code,
             "code_iata": None,
-            "name": dest_name,
-            "city": dest_city,
-            "timezone": "Europe/Madrid",
+            "name":      "London Stansted",
+            "city":      "London",
+            "timezone":  "Europe/London",
             "airport_info_url": f"/airports/{dest_code}",
         },
-        "scheduled_out": "2026-08-13T09:45:00Z",
-        "estimated_out": None,
-        "actual_out": "2026-08-13T09:50:00Z",
-        "scheduled_off": scheduled_off,
-        "estimated_off": estimated_off,
-        "actual_off": actual_off,
-        "scheduled_on": None,
-        "estimated_on": None,
-        "actual_on": None,
-        "scheduled_in": None,
-        "estimated_in": None,
-        "actual_in": None,
-        "departure_delay": 3900,
-        "arrival_delay": None,
-        "filed_ete": 3600,
+        "scheduled_out":  "2026-08-14T09:45:00Z",
+        "estimated_out":  None,
+        "actual_out":     None,
+        "scheduled_off":  scheduled_off,
+        "estimated_off":  estimated_off,
+        "actual_off":     actual_off,
+        "scheduled_on":   None,
+        "estimated_on":   None,
+        "actual_on":      None,
+        "scheduled_in":   None,
+        "estimated_in":   None,
+        "actual_in":      None,
+        "departure_delay": departure_delay,
+        "arrival_delay":  None,
+        "filed_ete":      3600,
         "progress_percent": 100,
-        "status": "Landed",
-        "aircraft_type": "A320",
-        "type": "Airline",
-        "route_distance": 900,
-        "filed_airspeed": 450,
+        "status":         "Landed",
+        "aircraft_type":  "B738",
+        "type":           "Airline",
+        "route_distance": 1400,
+        "filed_airspeed": 460,
         "filed_altitude": 370,
-        "route": "DCT GCTS",
-        "baggage_claim": None,
+        "route":          "DCT",
+        "baggage_claim":  None,
         "seats_cabin_business": None,
         "seats_cabin_coach": 180,
         "seats_cabin_first": None,
-        "gate_origin": "A3",
+        "gate_origin":    "B5",
         "gate_destination": None,
         "terminal_origin": None,
         "terminal_destination": None,
     }
 
 
-def _page(flights: list[dict], next_cursor: str | None = None) -> dict:
-    links = {"next": f"/airports/GCTS/flights/departures?cursor={next_cursor}"} \
-            if next_cursor else {"next": None}
-    return {
-        "links": links,
-        "num_pages": 1,
-        "departures": flights,
-    }
+def _page(flights: list[dict], key: str = "departures", next_cursor: str | None = None) -> dict:
+    links = {"next": f"/airports/WAW/flights?cursor={next_cursor}"} if next_cursor else {"next": None}
+    return {"links": links, "num_pages": 1, key: flights}
 
-
-def _env(monkeypatch):
-    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: date / window helpers
-# ---------------------------------------------------------------------------
-
-class TestParseIso8601:
-    def test_zulu_suffix(self):
-        dt = df.parse_iso8601("2026-08-10T00:00:00Z")
-        assert dt.tzinfo == timezone.utc
-        assert dt.year == 2026
-
-    def test_offset_suffix(self):
-        dt = df.parse_iso8601("2026-08-10T02:00:00+02:00")
-        assert dt == datetime(2026, 8, 10, 0, 0, 0, tzinfo=timezone.utc)
-
-    def test_no_timezone_raises(self):
-        with pytest.raises(df.ValidationError, match="no timezone"):
-            df.parse_iso8601("2026-08-10T00:00:00")
-
-    def test_invalid_format_raises(self):
-        with pytest.raises(df.ValidationError, match="Cannot parse"):
-            df.parse_iso8601("not-a-date")
-
-
-class TestValidateWindow:
-    def _pair(self, hours_ago_start: float = 48, hours_ago_end: float = 24):
-        now = datetime.now(tz=timezone.utc)
-        start = now - timedelta(hours=hours_ago_start)
-        end   = now - timedelta(hours=hours_ago_end)
-        return start, end
-
-    def test_valid_24h_window(self):
-        start, end = self._pair()
-        df.validate_window(start, end)  # no exception
-
-    def test_wrong_duration_raises(self):
-        now = datetime.now(tz=timezone.utc)
-        start = now - timedelta(hours=48)
-        end   = now - timedelta(hours=25)   # 23 h
-        with pytest.raises(df.ValidationError, match="24 hours"):
-            df.validate_window(start, end)
-
-    def test_too_old_raises(self):
-        now = datetime.now(tz=timezone.utc)
-        start = now - timedelta(days=20)
-        end   = start + timedelta(hours=24)
-        with pytest.raises(df.ValidationError, match="10 days"):
-            df.validate_window(start, end)
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: delay calculation
-# ---------------------------------------------------------------------------
-
-class TestDelayCalculation:
-    """Test the exact 60-min boundary."""
-
-    def _run(self, scheduled: str, actual: str, min_delay: int = 60) -> list[df.DelayedFlight]:
-        flight = _make_flight(scheduled_off=scheduled, actual_off=actual)
-        stats  = df.Stats()
-        results: list[df.DelayedFlight] = []
-
-        with patch("delayed_flights._request_page", return_value=_page([flight])):
-            import requests
-            with requests.Session() as session:
-                for f in df.iter_delayed_flights(
-                    session, API_KEY, "GCTS", START, END, min_delay, False, stats
-                ):
-                    results.append(f)
-
-        return results
-
-    def test_exactly_60_min_delay_found(self):
-        results = self._run("2026-08-13T10:00:00Z", "2026-08-13T11:00:00Z", min_delay=60)
-        assert len(results) == 1
-        assert results[0].delay_minutes == 60
-
-    def test_more_than_60_min_delay_found(self):
-        results = self._run("2026-08-13T10:00:00Z", "2026-08-13T11:30:00Z", min_delay=60)
-        assert len(results) == 1
-        assert results[0].delay_minutes == 90
-
-    def test_59_min_delay_not_found(self):
-        results = self._run("2026-08-13T10:00:00Z", "2026-08-13T10:59:00Z", min_delay=60)
-        assert len(results) == 0
-
-    def test_zero_delay_not_found(self):
-        results = self._run("2026-08-13T10:00:00Z", "2026-08-13T10:00:00Z", min_delay=60)
-        assert len(results) == 0
-
-    def test_early_flight_not_found(self):
-        results = self._run("2026-08-13T10:00:00Z", "2026-08-13T09:45:00Z", min_delay=60)
-        assert len(results) == 0
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: missing timestamps → skipped
-# ---------------------------------------------------------------------------
-
-class TestMissingTimestamps:
-    def _skipped_stats(self, scheduled_off=None, actual_off=None):
-        flight = _make_flight()
-        flight["scheduled_off"] = scheduled_off
-        flight["actual_off"]    = actual_off
-        stats  = df.Stats()
-
-        with patch("delayed_flights._request_page", return_value=_page([flight])):
-            import requests
-            with requests.Session() as session:
-                list(df.iter_delayed_flights(
-                    session, API_KEY, "GCTS", START, END, 60, False, stats
-                ))
-        return stats
-
-    def test_missing_scheduled_off_skipped(self):
-        stats = self._skipped_stats(scheduled_off=None, actual_off="2026-08-13T11:00:00Z")
-        assert stats.flights_skipped == 1
-        assert stats.flights_found   == 0
-
-    def test_missing_actual_off_skipped(self):
-        stats = self._skipped_stats(scheduled_off="2026-08-13T10:00:00Z", actual_off=None)
-        assert stats.flights_skipped == 1
-        assert stats.flights_found   == 0
-
-    def test_both_missing_skipped(self):
-        stats = self._skipped_stats(scheduled_off=None, actual_off=None)
-        assert stats.flights_skipped == 1
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: pagination
-# ---------------------------------------------------------------------------
-
-class TestPagination:
-    def test_pagination_follows_cursor(self):
-        """Two pages: only second page has delayed flight."""
-        page1 = _page(
-            [_make_flight("FR0001", actual_off="2026-08-13T10:20:00Z")],  # 20 min → skipped
-            next_cursor="abc123",
-        )
-        page2 = _page(
-            [_make_flight("FR0002", actual_off="2026-08-13T11:05:00Z")],  # 65 min → found
-        )
-        call_count = 0
-
-        def fake_request(session, api_key, airport, start, end, cursor, stats):
-            nonlocal call_count
-            call_count += 1
-            stats.requests_made += 1
-            return page1 if cursor is None else page2
-
-        stats   = df.Stats()
-        results = []
-        with patch("delayed_flights._request_page", side_effect=fake_request):
-            import requests
-            with requests.Session() as session:
-                for f in df.iter_delayed_flights(
-                    session, API_KEY, "GCTS", START, END, 60, False, stats
-                ):
-                    results.append(f)
-
-        assert call_count == 2
-        assert len(results) == 1
-        assert results[0].ident == "FR0002"
-
-    def test_stops_after_first_result(self):
-        """stop_at_first=True must not follow pagination cursor."""
-        page1 = _page(
-            [_make_flight("FR0001", actual_off="2026-08-13T11:05:00Z")],  # 65 min → found
-            next_cursor="cursor_to_page2",
-        )
-        page2 = _page([_make_flight("FR0002", actual_off="2026-08-13T12:00:00Z")])
-        call_count = 0
-
-        def fake_request(session, api_key, airport, start, end, cursor, stats):
-            nonlocal call_count
-            call_count += 1
-            stats.requests_made += 1
-            return page1 if cursor is None else page2
-
-        stats   = df.Stats()
-        results = []
-        with patch("delayed_flights._request_page", side_effect=fake_request):
-            import requests
-            with requests.Session() as session:
-                for f in df.iter_delayed_flights(
-                    session, API_KEY, "GCTS", START, END, 60, True, stats
-                ):
-                    results.append(f)
-                    break  # simulate stop_at_first
-
-        assert call_count == 1
-        assert len(results) == 1
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: --all flag
-# ---------------------------------------------------------------------------
-
-class TestShowAll:
-    def test_all_flag_returns_multiple_flights(self):
-        flights = [
-            _make_flight("FR0001", actual_off="2026-08-13T11:05:00Z"),  # +65
-            _make_flight("FR0002", actual_off="2026-08-13T11:15:00Z"),  # +75
-            _make_flight("FR0003", actual_off="2026-08-13T10:20:00Z"),  # +20 skip
-        ]
-        stats   = df.Stats()
-        results = []
-
-        with patch("delayed_flights._request_page", return_value=_page(flights)):
-            import requests
-            with requests.Session() as session:
-                for f in df.iter_delayed_flights(
-                    session, API_KEY, "GCTS", START, END, 60, False, stats
-                ):
-                    results.append(f)
-
-        assert len(results) == 2
-        assert {r.ident for r in results} == {"FR0001", "FR0002"}
-
-
-# ---------------------------------------------------------------------------
-# Integration tests: HTTP error handling (using responses library)
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def env_key(monkeypatch):
     monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
 
 
-@resp_lib.activate
-def test_auth_error_401(env_key):
-    resp_lib.add(
-        resp_lib.GET, DEPARTURES_URL,
-        json={"title": "Unauthorized", "reason": "Invalid key", "detail": "Bad key", "status": 401},
-        status=401,
-    )
-    import requests as req
-    with req.Session() as session:
-        with pytest.raises(df.AuthError):
-            df.Stats()
-            df._request_page(session, API_KEY, "GCTS", START, END, None, df.Stats())
+# ---------------------------------------------------------------------------
+# parse_iso8601 / validate_past_window
+# ---------------------------------------------------------------------------
+
+class TestParseIso8601:
+    def test_zulu(self):
+        dt = df.parse_iso8601("2026-08-10T00:00:00Z")
+        assert dt.tzinfo == timezone.utc
+
+    def test_offset(self):
+        dt = df.parse_iso8601("2026-08-10T02:00:00+02:00")
+        assert dt == datetime(2026, 8, 10, 0, 0, 0, tzinfo=timezone.utc)
+
+    def test_no_tz_raises(self):
+        with pytest.raises(df.ValidationError, match="no timezone"):
+            df.parse_iso8601("2026-08-10T00:00:00")
+
+    def test_invalid_raises(self):
+        with pytest.raises(df.ValidationError, match="Cannot parse"):
+            df.parse_iso8601("not-a-date")
 
 
-@resp_lib.activate
-def test_auth_error_403(env_key):
-    resp_lib.add(
-        resp_lib.GET, DEPARTURES_URL,
-        json={"title": "Forbidden", "reason": "Forbidden", "detail": "No access", "status": 403},
-        status=403,
-    )
-    import requests as req
-    with req.Session() as session:
-        with pytest.raises(df.AuthError):
-            df._request_page(session, API_KEY, "GCTS", START, END, None, df.Stats())
+class TestValidatePastWindow:
+    def test_valid_24h(self):
+        now = datetime.now(tz=timezone.utc)
+        df.validate_past_window(now - timedelta(hours=24), now)
+
+    def test_wrong_duration(self):
+        now = datetime.now(tz=timezone.utc)
+        with pytest.raises(df.ValidationError, match="24 hours"):
+            df.validate_past_window(now - timedelta(hours=12), now)
+
+    def test_too_old(self):
+        now = datetime.now(tz=timezone.utc)
+        with pytest.raises(df.ValidationError, match="10 days"):
+            df.validate_past_window(now - timedelta(days=20), now - timedelta(days=19))
 
 
-@resp_lib.activate
-def test_rate_limit_after_retry(env_key):
-    """Two consecutive 429 responses → RateLimitError (no infinite loop)."""
-    for _ in range(2):
-        resp_lib.add(
-            resp_lib.GET, DEPARTURES_URL,
-            json={"title": "Rate Limited", "reason": "RateLimit", "detail": "Slow down", "status": 429},
-            status=429,
-            headers={"Retry-After": "1"},
+# ---------------------------------------------------------------------------
+# fmt_local
+# ---------------------------------------------------------------------------
+
+class TestFmtLocal:
+    BASE = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_no_tz_utc_only(self):
+        r = df.fmt_local(self.BASE, None)
+        assert "12:00 UTC" in r
+        assert "(" not in r
+
+    def test_known_tz(self):
+        r = df.fmt_local(self.BASE, "Europe/Warsaw")
+        assert "12:00 UTC" in r
+        assert "14:00" in r   # CEST = UTC+2
+
+    def test_unknown_tz_fallback(self):
+        r = df.fmt_local(self.BASE, "Bogus/Invalid")
+        assert "12:00 UTC" in r
+
+    def test_none_dt(self):
+        assert df.fmt_local(None, "Europe/Warsaw") == "N/A"
+
+
+# ---------------------------------------------------------------------------
+# _build_flight – past mode (actual delay)
+# ---------------------------------------------------------------------------
+
+class TestBuildFlightPast:
+    def test_exact_60_min(self):
+        raw = _make_raw_flight(scheduled_off="2026-08-14T10:00:00Z",
+                               actual_off="2026-08-14T11:00:00Z")
+        f = df._build_flight(raw, "WAW", is_past=True)
+        assert f is not None
+        assert f.delay_minutes == 60
+
+    def test_over_60_min(self):
+        raw = _make_raw_flight(scheduled_off="2026-08-14T10:00:00Z",
+                               actual_off="2026-08-14T11:30:00Z")
+        f = df._build_flight(raw, "WAW", is_past=True)
+        assert f is not None and f.delay_minutes == 90
+
+    def test_early_flight_negative(self):
+        raw = _make_raw_flight(scheduled_off="2026-08-14T10:00:00Z",
+                               actual_off="2026-08-14T09:50:00Z")
+        f = df._build_flight(raw, "WAW", is_past=True)
+        assert f is not None and f.delay_minutes == -10
+
+    def test_missing_actual_off_returns_none(self):
+        raw = _make_raw_flight(actual_off=None)
+        f = df._build_flight(raw, "WAW", is_past=True)
+        assert f is None
+
+    def test_missing_scheduled_off_returns_none(self):
+        raw = _make_raw_flight(scheduled_off=None, actual_off="2026-08-14T11:00:00Z")
+        raw["scheduled_off"] = None
+        f = df._build_flight(raw, "WAW", is_past=True)
+        assert f is None
+
+    def test_timezone_stored(self):
+        raw = _make_raw_flight(scheduled_off="2026-08-14T10:00:00Z",
+                               actual_off="2026-08-14T11:05:00Z")
+        f = df._build_flight(raw, "WAW", is_past=True)
+        assert f is not None
+        assert f.origin_tz == "Europe/Warsaw"
+        assert f.destination_tz == "Europe/London"
+
+
+# ---------------------------------------------------------------------------
+# _build_flight – upcoming mode (departure_delay)
+# ---------------------------------------------------------------------------
+
+class TestBuildFlightUpcoming:
+    def test_departure_delay_field(self):
+        raw = _make_raw_flight(actual_off=None, departure_delay=4200)  # 70 min
+        f = df._build_flight(raw, "WAW", is_past=False)
+        assert f is not None
+        assert f.delay_minutes == 70
+
+    def test_no_departure_delay_returns_none(self):
+        raw = _make_raw_flight(actual_off=None, departure_delay=None)
+        raw["departure_delay"] = None
+        f = df._build_flight(raw, "WAW", is_past=False)
+        assert f is None
+
+    def test_is_past_false(self):
+        raw = _make_raw_flight(actual_off=None, departure_delay=3600)
+        f = df._build_flight(raw, "WAW", is_past=False)
+        assert f is not None and f.is_past is False
+
+
+# ---------------------------------------------------------------------------
+# iter_past_delayed / iter_upcoming_delayed – pagination
+# ---------------------------------------------------------------------------
+
+class TestPagination:
+    def test_past_follows_cursor(self):
+        page1 = _page([_make_raw_flight("LO001", actual_off="2026-08-14T10:20:00Z")],
+                      key="departures", next_cursor="cur1")   # 20 min → skipped
+        page2 = _page([_make_raw_flight("LO002", actual_off="2026-08-14T11:05:00Z")],
+                      key="departures")                        # 65 min → found
+
+        call_n = 0
+        def fake(session, api_key, url, params, stats):
+            nonlocal call_n
+            call_n += 1
+            stats.requests_made += 1
+            return page1 if call_n == 1 else page2
+
+        import requests
+        stats = df.Stats()
+        with patch("delayed_flights._request_page", side_effect=fake):
+            with requests.Session() as s:
+                results = list(df.iter_past_delayed(
+                    s, API_KEY, "WAW", START, END, 60, False, stats))
+
+        assert call_n == 2
+        assert len(results) == 1
+        assert results[0].ident == "LO002"
+
+    def test_stops_after_first_past(self):
+        page1 = _page([_make_raw_flight("LO001", actual_off="2026-08-14T11:05:00Z")],
+                      key="departures", next_cursor="cur1")
+
+        call_n = 0
+        def fake(session, api_key, url, params, stats):
+            nonlocal call_n
+            call_n += 1
+            stats.requests_made += 1
+            return page1
+
+        import requests
+        stats = df.Stats()
+        with patch("delayed_flights._request_page", side_effect=fake):
+            with requests.Session() as s:
+                results = []
+                for f in df.iter_past_delayed(s, API_KEY, "WAW", START, END, 60, True, stats):
+                    results.append(f)
+                    break
+
+        assert call_n == 1
+        assert len(results) == 1
+
+    def test_upcoming_uses_scheduled_departures_key(self):
+        now = datetime.now(tz=timezone.utc)
+        page = _page(
+            [_make_raw_flight("LO999", actual_off=None, departure_delay=4200)],
+            key="scheduled_departures",
         )
+
+        import requests
+        stats = df.Stats()
+        with patch("delayed_flights._request_page", return_value=page):
+            with requests.Session() as s:
+                results = list(df.iter_upcoming_delayed(
+                    s, API_KEY, "WAW", now, now + timedelta(hours=6), 60, False, stats))
+
+        assert len(results) == 1
+        assert results[0].delay_minutes == 70
+        assert results[0].is_past is False
+
+
+# ---------------------------------------------------------------------------
+# HTTP error handling
+# ---------------------------------------------------------------------------
+
+@resp_lib.activate
+def test_auth_401(env_key):
+    resp_lib.add(resp_lib.GET, PAST_URL,
+                 json={"title": "Unauthorized", "reason": "x", "detail": "bad key", "status": 401},
+                 status=401)
     import requests as req
-    with req.Session() as session:
-        with patch("time.sleep"):   # don't actually sleep in tests
-            with pytest.raises(df.RateLimitError):
-                df._request_page(session, API_KEY, "GCTS", START, END, None, df.Stats())
+    with req.Session() as s:
+        with pytest.raises(df.AuthError):
+            df._request_page(s, API_KEY, PAST_URL, {}, df.Stats())
 
 
 @resp_lib.activate
-def test_timeout_error(env_key):
+def test_rate_limit_twice(env_key):
+    for _ in range(2):
+        resp_lib.add(resp_lib.GET, PAST_URL,
+                     json={"title": "Rate", "reason": "x", "detail": "slow", "status": 429},
+                     status=429, headers={"Retry-After": "1"})
     import requests as req
-    resp_lib.add(
-        resp_lib.GET, DEPARTURES_URL,
-        body=req.exceptions.Timeout(),
-    )
-    with req.Session() as session:
+    with req.Session() as s:
+        with patch("time.sleep"):
+            with pytest.raises(df.RateLimitError):
+                df._request_page(s, API_KEY, PAST_URL, {}, df.Stats())
+
+
+@resp_lib.activate
+def test_timeout(env_key):
+    import requests as req
+    resp_lib.add(resp_lib.GET, PAST_URL, body=req.exceptions.Timeout())
+    with req.Session() as s:
         with pytest.raises(df.NetworkTimeoutError):
-            df._request_page(session, API_KEY, "GCTS", START, END, None, df.Stats())
+            df._request_page(s, API_KEY, PAST_URL, {}, df.Stats())
 
 
 @resp_lib.activate
 def test_connection_error(env_key):
     import requests as req
-    resp_lib.add(
-        resp_lib.GET, DEPARTURES_URL,
-        body=req.exceptions.ConnectionError("No route to host"),
-    )
-    with req.Session() as session:
+    resp_lib.add(resp_lib.GET, PAST_URL, body=req.exceptions.ConnectionError())
+    with req.Session() as s:
         with pytest.raises(df.NetworkConnectionError):
-            df._request_page(session, API_KEY, "GCTS", START, END, None, df.Stats())
+            df._request_page(s, API_KEY, PAST_URL, {}, df.Stats())
 
 
 # ---------------------------------------------------------------------------
-# Integration tests: main() with mocked HTTP
+# main() integration
 # ---------------------------------------------------------------------------
 
-def test_main_no_api_key(monkeypatch):
+def test_no_airport_shows_help(capsys):
+    """No -a → prints help, returns 0."""
+    rc = df.main([])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "usage:" in captured.out.lower() or "delay" in captured.out
+
+
+def test_no_api_key(monkeypatch):
     monkeypatch.delenv("FLIGHTAWARE_API_KEY", raising=False)
-    rc = df.main(["--airport", "GCTS",
-                  "--start", "2026-08-13T00:00:00Z",
-                  "--end", "2026-08-14T00:00:00Z"])
+    with patch("delayed_flights.load_dotenv"):
+        rc = df.main(["-a", "WAW", "-p",
+                      "--start", "2026-08-13T00:00:00Z",
+                      "--end",   "2026-08-14T00:00:00Z"])
     assert rc == df.ConfigError.exit_code
 
 
-def test_main_invalid_dates(monkeypatch):
+def test_main_past_found(monkeypatch, capsys):
     monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
-    rc = df.main(["--airport", "GCTS",
-                  "--start", "not-a-date",
-                  "--end", "2026-08-14T00:00:00Z"])
-    assert rc == df.ValidationError.exit_code
+    raw = _make_raw_flight("LO777",
+                           scheduled_off="2026-08-13T10:00:00Z",
+                           actual_off="2026-08-13T11:10:00Z")   # 70 min
+    page = _page([raw], key="departures")
 
+    with patch("delayed_flights._request_page", return_value=page):
+        rc = df.main(["-a", "WAW", "-p",
+                      "--start", "2026-08-13T00:00:00Z",
+                      "--end",   "2026-08-14T00:00:00Z"])
 
-def test_main_no_timezone_in_date(monkeypatch):
-    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
-    rc = df.main(["--airport", "GCTS",
-                  "--start", "2026-08-13T00:00:00",   # no tz
-                  "--end", "2026-08-14T00:00:00Z"])
-    assert rc == df.ValidationError.exit_code
-
-
-def test_main_window_not_24h(monkeypatch):
-    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
-    rc = df.main(["--airport", "GCTS",
-                  "--start", "2026-08-13T00:00:00Z",
-                  "--end", "2026-08-13T12:00:00Z"])   # only 12 h
-    assert rc == df.ValidationError.exit_code
-
-
-def test_main_found_flight_text_output(monkeypatch, capsys):
-    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
-    flight = _make_flight("VY9999",
-                          scheduled_off="2026-08-13T10:00:00Z",
-                          actual_off="2026-08-13T11:10:00Z")  # 70 min
-
-    with patch("delayed_flights._request_page", return_value=_page([flight])):
-        rc = df.main([
-            "--airport", "GCTS",
-            "--start", "2026-08-13T00:00:00Z",
-            "--end", "2026-08-14T00:00:00Z",
-        ])
-
-    captured = capsys.readouterr()
+    out = capsys.readouterr().out
     assert rc == 0
-    assert "FOUND DELAYED FLIGHT" in captured.out
-    assert "VY9999" in captured.out
-    assert "70 minutes" in captured.out
+    assert "LO777" in out
+    assert "70 minutes" in out
 
 
-def test_main_no_delayed_flight(monkeypatch, capsys):
+def test_main_past_not_found(monkeypatch, capsys):
     monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
-    flight = _make_flight("VY1111",
-                          scheduled_off="2026-08-13T10:00:00Z",
-                          actual_off="2026-08-13T10:10:00Z")  # 10 min only
+    raw = _make_raw_flight("LO001",
+                           scheduled_off="2026-08-13T10:00:00Z",
+                           actual_off="2026-08-13T10:05:00Z")   # 5 min
+    page = _page([raw], key="departures")
 
-    with patch("delayed_flights._request_page", return_value=_page([flight])):
-        rc = df.main([
-            "--airport", "GCTS",
-            "--start", "2026-08-13T00:00:00Z",
-            "--end", "2026-08-14T00:00:00Z",
-        ])
+    with patch("delayed_flights._request_page", return_value=page):
+        rc = df.main(["-a", "WAW", "-p",
+                      "--start", "2026-08-13T00:00:00Z",
+                      "--end",   "2026-08-14T00:00:00Z"])
 
-    captured = capsys.readouterr()
     assert rc == 0
-    assert "NO FLIGHT" in captured.out
+    assert "NO FLIGHT" in capsys.readouterr().out
 
 
-def test_main_json_output(monkeypatch, capsys):
+def test_main_upcoming_found(monkeypatch, capsys):
     monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
-    flight = _make_flight("IB3456",
-                          scheduled_off="2026-08-13T10:00:00Z",
-                          actual_off="2026-08-13T11:30:00Z")  # 90 min
+    raw = _make_raw_flight("LO888", actual_off=None, departure_delay=5400)  # 90 min
+    page = _page([raw], key="scheduled_departures")
 
-    with patch("delayed_flights._request_page", return_value=_page([flight])):
-        rc = df.main([
-            "--airport", "GCTS",
-            "--start", "2026-08-13T00:00:00Z",
-            "--end", "2026-08-14T00:00:00Z",
-            "--json",
-        ])
+    with patch("delayed_flights._request_page", return_value=page):
+        rc = df.main(["-a", "WAW"])
 
-    captured = capsys.readouterr()
+    out = capsys.readouterr().out
     assert rc == 0
-    data = json.loads(captured.out)
-    assert data["flights_found"] == 1
-    assert data["delayed_flights"][0]["ident"] == "IB3456"
-    assert data["delayed_flights"][0]["delay_minutes"] == 90
+    assert "LO888" in out
+    assert "90 minutes" in out
 
 
-def test_main_all_flag_returns_multiple(monkeypatch, capsys):
+def test_main_json_past(monkeypatch, capsys):
+    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
+    raw = _make_raw_flight("LO999",
+                           scheduled_off="2026-08-13T10:00:00Z",
+                           actual_off="2026-08-13T11:30:00Z")   # 90 min
+    page = _page([raw], key="departures")
+
+    with patch("delayed_flights._request_page", return_value=page):
+        rc = df.main(["-a", "WAW", "-p",
+                      "--start", "2026-08-13T00:00:00Z",
+                      "--end",   "2026-08-14T00:00:00Z",
+                      "--json"])
+
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["version"] == "0.0.1"
+    assert data["mode"] == "past"
+    assert data["flights"][0]["delay_minutes"] == 90
+
+
+def test_main_json_upcoming(monkeypatch, capsys):
+    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
+    raw = _make_raw_flight("LO555", actual_off=None, departure_delay=3900)  # 65 min
+    page = _page([raw], key="scheduled_departures")
+
+    with patch("delayed_flights._request_page", return_value=page):
+        rc = df.main(["-a", "WAW", "--json"])
+
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["mode"] == "upcoming"
+    assert data["flights"][0]["delay_minutes"] == 65
+
+
+def test_main_all_flag(monkeypatch, capsys):
     monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
     flights = [
-        _make_flight("AA001", actual_off="2026-08-13T11:05:00Z"),  # 65 min
-        _make_flight("AA002", actual_off="2026-08-13T11:20:00Z"),  # 80 min
+        _make_raw_flight("LO001", scheduled_off="2026-08-13T10:00:00Z",
+                         actual_off="2026-08-13T11:05:00Z"),
+        _make_raw_flight("LO002", scheduled_off="2026-08-13T10:00:00Z",
+                         actual_off="2026-08-13T11:20:00Z"),
     ]
+    page = _page(flights, key="departures")
 
-    with patch("delayed_flights._request_page", return_value=_page(flights)):
-        rc = df.main([
-            "--airport", "GCTS",
-            "--start", "2026-08-13T00:00:00Z",
-            "--end", "2026-08-14T00:00:00Z",
-            "--all", "--json",
-        ])
+    with patch("delayed_flights._request_page", return_value=page):
+        rc = df.main(["-a", "WAW", "-p",
+                      "--start", "2026-08-13T00:00:00Z",
+                      "--end",   "2026-08-14T00:00:00Z",
+                      "--all", "--json"])
 
-    captured = capsys.readouterr()
     assert rc == 0
-    data = json.loads(captured.out)
+    data = json.loads(capsys.readouterr().out)
     assert data["flights_found"] == 2
 
 
+def test_start_end_without_past_raises(monkeypatch):
+    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
+    with patch("delayed_flights.load_dotenv"):
+        rc = df.main(["-a", "WAW",
+                      "--start", "2026-08-13T00:00:00Z",
+                      "--end",   "2026-08-14T00:00:00Z"])
+    assert rc == df.ValidationError.exit_code
+
+
+def test_window_not_24h(monkeypatch):
+    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
+    with patch("delayed_flights.load_dotenv"):
+        rc = df.main(["-a", "WAW", "-p",
+                      "--start", "2026-08-13T00:00:00Z",
+                      "--end",   "2026-08-13T12:00:00Z"])
+    assert rc == df.ValidationError.exit_code
+
+
+def test_invalid_date(monkeypatch):
+    monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
+    with patch("delayed_flights.load_dotenv"):
+        rc = df.main(["-a", "WAW", "-p",
+                      "--start", "not-a-date",
+                      "--end",   "2026-08-14T00:00:00Z"])
+    assert rc == df.ValidationError.exit_code
+
+
 # ---------------------------------------------------------------------------
-# Unit: airport_label helper
+# Helpers / misc
 # ---------------------------------------------------------------------------
 
-class TestAirportLabel:
-    def test_known_icao_from_dict(self):
-        label = df.airport_label("GCTS", None, None)
-        assert "GCTS" in label
-        assert "Tenerife South" in label
+def test_airport_label_iata():
+    assert "Warsaw" in df.airport_label("WAW", None, None)
 
-    def test_name_overrides_dict(self):
-        label = df.airport_label("GCTS", "Custom Name", None)
-        assert "Custom Name" in label
+def test_airport_label_unknown():
+    assert df.airport_label("ZZZ", None, None) == "ZZZ"
 
-    def test_unknown_no_city(self):
-        label = df.airport_label("ZZZZ", None, None)
-        assert label == "ZZZZ"
+def test_airport_label_none():
+    assert df.airport_label(None, None, None) == "Unknown"
 
-    def test_none_code(self):
-        assert df.airport_label(None, None, None) == "Unknown"
-
-
-# ---------------------------------------------------------------------------
-# Smoke test: module imports cleanly
-# ---------------------------------------------------------------------------
+def test_version_constant():
+    assert df.VERSION == "0.0.1"
 
 def test_module_attributes():
-    assert hasattr(df, "main")
-    assert hasattr(df, "iter_delayed_flights")
-    assert hasattr(df, "parse_iso8601")
-    assert hasattr(df, "validate_window")
+    for attr in ("main", "iter_past_delayed", "iter_upcoming_delayed",
+                 "parse_iso8601", "validate_past_window",
+                 "past_window", "upcoming_window", "fmt_local", "VERSION"):
+        assert hasattr(df, attr), f"missing: {attr}"
