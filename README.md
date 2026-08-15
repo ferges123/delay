@@ -1,4 +1,4 @@
-# Delay (v0.0.1)
+# Delay
 
 CLI & Background Daemon tool in Python 3 querying **FlightAware AeroAPI v4** to track delayed flight departures with instant **Telegram Bot** alerts.
 
@@ -142,7 +142,7 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 | `--min-delay` | | `60` | Minimum delay threshold in minutes |
 | `--all` | | *off* | Return all delayed flights instead of stopping after first |
 | `--json` | | *off* | Format output as JSON |
-| `--version` | | | Show version number (`0.0.1`) |
+| `--version` | | | Show version number |
 | `--help` | `-h` | | Show help message |
 
 ---
