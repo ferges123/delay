@@ -346,7 +346,7 @@ class TestTelegram:
         assert "WAW (Warsaw Chopin)" in text
         assert "STN (London Stansted)" in text
         assert "+75 min" in text
-        assert "PLANOWANE OPÓŹNIENIE" in text
+        assert "PLANNED DEPARTURE DELAY" in text
 
     @resp_lib.activate
     def test_send_telegram_message_success(self):
@@ -592,19 +592,19 @@ class TestDaemonManagement:
         with patch("delayed_flights.get_running_daemon_pid", return_value=None):
             rc = df.main(["--status"])
         assert rc == 0
-        assert "NIE jest uruchomiony" in capsys.readouterr().out
+        assert "is NOT running" in capsys.readouterr().out
 
     def test_status_when_running(self, capsys):
         with patch("delayed_flights.get_running_daemon_pid", return_value=12345):
             rc = df.main(["--status"])
         assert rc == 0
-        assert "DZIAŁA w tle (PID: 12345)" in capsys.readouterr().out
+        assert "is RUNNING in background (PID: 12345)" in capsys.readouterr().out
 
     def test_stop_when_not_running(self, capsys):
         with patch("delayed_flights.get_running_daemon_pid", return_value=None):
             rc = df.main(["--stop"])
         assert rc == 0
-        assert "Brak aktywnego procesu" in capsys.readouterr().out
+        assert "No active background daemon" in capsys.readouterr().out
 
     def test_logs_command(self, capsys, tmp_path):
         log_file = tmp_path / "daemon.log"
