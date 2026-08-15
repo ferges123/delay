@@ -56,10 +56,10 @@ DEFAULT_INTERVAL  = 30      # minutes between checks in daemon mode
 # Dynamic & Persistent Airport Cache (retrieved from AeroAPI and cached on disk)
 # ---------------------------------------------------------------------------
 
-AIRPORT_CACHE_FILE = os.environ.get(
-    "DELAY_AIRPORT_CACHE_FILE",
-    os.path.expanduser("~/.cache/delayed_flights/airports.json"),
-)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CACHE_FILE = os.path.join(SCRIPT_DIR, ".airports_cache.json")
+
+AIRPORT_CACHE_FILE = os.environ.get("DELAY_AIRPORT_CACHE_FILE", DEFAULT_CACHE_FILE)
 
 AIRPORT_CACHE: dict[str, str] = {}
 
