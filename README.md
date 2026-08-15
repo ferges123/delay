@@ -1,6 +1,6 @@
 # Delay (v0.0.1)
 
-CLI & Daemon tool in Python 3 querying **FlightAware AeroAPI v4** to track delayed flight departures with instant **Telegram Bot** alerts.
+CLI & Background Daemon tool in Python 3 querying **FlightAware AeroAPI v4** to track delayed flight departures with instant **Telegram Bot** alerts.
 
 ---
 
@@ -16,14 +16,38 @@ CLI & Daemon tool in Python 3 querying **FlightAware AeroAPI v4** to track delay
    - Verifies actual delays (`actual_off - scheduled_off >= --min-delay`)
 
 3. **Daemon / Monitor mode (`-d` / `--daemon`)**:
-   - Runs continuously in the background
+   - Runs continuously in the **background** by default (safe to close terminal)
    - Periodically checks the airport every **N minutes** (`-i` / `--interval`, default: 30m)
-   - Checks the next **W hours** (`-w` / `--hours`, default: 6h)
+   - Bounded runtime duration support (`-D` / `--duration`, e.g. `4h`, `30m`, `1d`)
    - Sends Telegram notifications immediately when new delayed flights appear (with deduplication)
+   - Built-in management commands: `delay --status`, `delay --logs`, `delay --stop`
 
-4. **Telegram Bot Integration**:
+4. **Dynamic Airport Resolution & Persistent Cache**:
+   - Fetches official airport names, cities, and timezones directly from AeroAPI
+   - Caches airport data locally on disk (`.airports_cache.json`) to conserve API credits
+
+5. **Telegram Bot Integration**:
    - Formatted HTML alerts sent directly to your Telegram chat/channel
    - Shows flight identifier, route, origin/destination, scheduled/estimated takeoff times, local times, and delay
+
+---
+
+## Installation & Setup
+
+```bash
+# 1. Clone repository
+git clone https://github.com/ferges123/delay.git /opt/delay
+cd /opt/delay
+
+# 2. Create virtual environment and install dependencies
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Add CLI alias to your ~/.bashrc (optional, for direct 'delay' command)
+echo "alias delay='/opt/delay/.venv/bin/python3 /opt/delay/delayed_flights.py'" >> ~/.bashrc
+source ~/.bashrc
+```
 
 ---
 
@@ -32,10 +56,10 @@ CLI & Daemon tool in Python 3 querying **FlightAware AeroAPI v4** to track delay
 Create or edit your `.env` file in the project folder:
 
 ```bash
-# FlightAware AeroAPI Key
+# FlightAware AeroAPI Key (Required)
 FLIGHTAWARE_API_KEY=your_aeroapi_key_here
 
-# Telegram Bot (Optional, for -d daemon alerts and --telegram)
+# Telegram Bot (Optional, for -d daemon alerts and -t)
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ
 TELEGRAM_CHAT_ID=123456789
 ```
