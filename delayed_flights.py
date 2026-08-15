@@ -390,17 +390,17 @@ modes:
              Uses: GET /airports/{id}/flights/scheduled_departures
   -p/--past  Actual delayed departures in the last 24h.
              Uses: GET /airports/{id}/flights/departures
-  -d/--daemon Run continuously in monitoring mode, checking every N minutes and alerting to Telegram.
+  -d/--daemon Run continuously in background monitoring mode, checking every N minutes and alerting to Telegram.
 
 examples:
   delay -a WAW                          # planned delays in next 6h
   delay -a WAW -w 9                     # planned delays in next 9h
-  delay -a WAW -d                       # daemon mode: check WAW every 30m indefinitely
-  delay -a WAW -d -D 4h                 # daemon mode: run for 4 hours then exit
-  delay -a WAW -d -D 4h -b              # run daemon in background (-b), close terminal freely!
+  delay -a WAW -d                       # run in background: check WAW every 30m (safe to close terminal)
+  delay -a WAW -d -D 4h                 # run in background for 4 hours then exit
   delay --status                        # check background daemon status
   delay --logs                          # view background daemon logs
   delay --stop                          # stop background daemon
+  delay -a WAW -d -f                    # run daemon in foreground (-f)
   delay -a WAW -d -w 6 -i 15 -D 8h      # check every 15m for 8 hours total
   delay -a WAW -p                       # actual delays, last 24h
   delay -a LPA -p --all                 # all actual delayed, last 24h
@@ -419,12 +419,12 @@ examples:
         help="Past mode: show actual delayed departures in the last 24 h.",
     )
     parser.add_argument(
-        "-d", "--daemon", action="store_true", dest="daemon",
-        help="Daemon mode: monitor airport periodically and send alerts to Telegram.",
+        "-d", "--daemon", "-b", "--bg", "--background", action="store_true", dest="daemon",
+        help="Daemon mode: monitor airport continuously in background and send alerts to Telegram.",
     )
     parser.add_argument(
-        "-b", "--bg", "--background", action="store_true", dest="background",
-        help="Run daemon in background (detached process). Allows closing terminal safely.",
+        "-f", "--foreground", "--fg", action="store_true", dest="foreground",
+        help="Run daemon in foreground attached to current terminal session.",
     )
     parser.add_argument(
         "--stop", action="store_true", dest="stop",
@@ -897,9 +897,10 @@ def spawn_background_daemon(argv: list[str]) -> int:
         print("  Stop daemon:  delay --stop")
         return 1
 
-    clean_args = [a for a in argv if a not in ("-b", "--bg", "--background")]
+    clean_args = [a for a in argv if a not in ("-f", "--foreground", "--fg")]
     if "-d" not in clean_args and "--daemon" not in clean_args:
         clean_args.append("-d")
+    clean_args.append("-f")  # Child runs loop in foreground of its detached session
 
     # Pass -u (unbuffered) so all output writes to log file in real time
     cmd = [sys.executable, "-u", os.path.abspath(__file__)] + clean_args
@@ -1093,15 +1094,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.logs:
         return handle_logs_daemon()
 
-    # ── BACKGROUND FORK (-b / --background) ───────────────────────────────
-    if args.background:
-        if not args.airport:
-            print("Error: please provide airport code (-a/--airport) when starting in background.", file=sys.stderr)
-            return 1
-        raw_args = sys.argv[1:] if argv is None else argv
-        return spawn_background_daemon(raw_args)
-
-    # Show help when no airport given
+    # Show help when no airport given (and not running --status/--logs/--stop)
     if not args.airport:
         parser.print_help()
         return 0
@@ -1116,12 +1109,17 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         bot_token, chat_id = get_telegram_config()
 
-        # ── DAEMON MODE ───────────────────────────────────────────────────
+        # ── DAEMON MODE (Background by default) ───────────────────────────
         if args.daemon:
             if args.past:
                 raise ValidationError("Cannot combine --daemon with --past.")
             if args.start or args.end:
                 raise ValidationError("Cannot combine --daemon with --start/--end.")
+
+            # Run in background by default unless --foreground/-f was specified
+            if not args.foreground:
+                raw_args = sys.argv[1:] if argv is None else argv
+                return spawn_background_daemon(raw_args)
 
             with requests.Session() as session:
                 run_daemon_loop(

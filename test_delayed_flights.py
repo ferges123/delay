@@ -533,14 +533,14 @@ class TestParseDuration:
 
 
 def test_daemon_duration_exits(monkeypatch):
-    """Daemon mode with small duration exits after deadline."""
+    """Daemon mode with small duration exits after deadline in foreground mode."""
     monkeypatch.setenv("FLIGHTAWARE_API_KEY", API_KEY)
     page = _page([], key="scheduled_departures")
 
     with patch("delayed_flights._request_page", return_value=page), \
          patch("time.sleep"):
-        # duration = 1s -> should execute and exit
-        rc = df.main(["-a", "WAW", "-d", "-D", "1s", "-i", "1"])
+        # foreground execution with -f
+        rc = df.main(["-a", "WAW", "-d", "-f", "-D", "1s", "-i", "1"])
     assert rc == 0
 
 
@@ -615,12 +615,13 @@ class TestDaemonManagement:
         out = capsys.readouterr().out
         assert "line1" in out and "line2" in out
 
-    def test_background_spawn(self, capsys):
+    def test_daemon_runs_in_background_by_default(self, capsys):
         mock_proc = MagicMock()
         mock_proc.pid = 9999
         with patch("delayed_flights.get_running_daemon_pid", return_value=None), \
              patch("subprocess.Popen", return_value=mock_proc), \
              patch("builtins.open", MagicMock()):
-            rc = df.main(["-a", "WAW", "-d", "-b"])
+            # -d alone runs in background by default!
+            rc = df.main(["-a", "WAW", "-d"])
         assert rc == 0
         assert "PID: 9999" in capsys.readouterr().out

@@ -50,9 +50,11 @@ TELEGRAM_CHAT_ID=123456789
 
 ### 1. Monitor / Daemon mode with Telegram alerts (`-d`)
 
+> **Note:** Daemon mode (`-d`) automatically runs in the background as a detached process, so you can safely close your terminal.
+
 ```bash
-# Run daemon in the background (-b) for 4 hours (-D 4h) — safe to close terminal!
-delay -a TFS -d -D 4h -b
+# Monitor TFS in background for 4 hours (-D 4h) — safe to close terminal!
+delay -a TFS -d -D 4h
 
 # Check if background daemon is running + see recent logs
 delay --status
@@ -63,8 +65,11 @@ delay --logs
 # Stop the background daemon
 delay --stop
 
-# Monitor Warsaw Chopin for 8 hours total, checking every 15 min in next 6h window
-delay -a WAW -d -D 8h -i 15 -w 6 -b
+# Monitor Warsaw Chopin in background for 8 hours total, checking every 15 min
+delay -a WAW -d -D 8h -i 15 -w 6
+
+# Run daemon in foreground (attached to terminal)
+delay -a WAW -d -f
 ```
 
 ### 2. Single-run (Upcoming departures)
@@ -100,8 +105,8 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 | Option | Shorthand | Default | Description |
 |---|---|---|---|
 | `--airport` | `-a` | *None* | Airport IATA or ICAO code (required, e.g. `WAW`, `LPA`, `TFS`) |
-| `--daemon` | `-d` | *off* | Run continuous monitoring daemon |
-| `--background` | `-b`, `--bg` | *off* | Run daemon in background (detached process). Safe to close terminal |
+| `--daemon` | `-d` | *off* | Run continuous monitoring daemon in background |
+| `--foreground` | `-f`, `--fg` | *off* | Run daemon in foreground attached to current terminal |
 | `--status` | | | Show status of running background daemon |
 | `--logs` | | | View recent logs from background daemon |
 | `--stop` | | | Stop running background daemon |
