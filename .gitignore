@@ -30,3 +30,8 @@ coverage.xml
 .vscode/
 *.swp
 *.swo
+
+# Local cache
+*.cache/
+.airports_cache.json
+airports.json

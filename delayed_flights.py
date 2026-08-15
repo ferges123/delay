@@ -53,20 +53,53 @@ DEFAULT_FUTURE_H  = 6       # hours ahead for upcoming / daemon mode
 DEFAULT_INTERVAL  = 30      # minutes between checks in daemon mode
 
 # ---------------------------------------------------------------------------
-# Dynamic Airport Cache & Resolver (retrieved from AeroAPI responses / endpoints)
+# Dynamic & Persistent Airport Cache (retrieved from AeroAPI and cached on disk)
 # ---------------------------------------------------------------------------
+
+AIRPORT_CACHE_FILE = os.environ.get(
+    "DELAY_AIRPORT_CACHE_FILE",
+    os.path.expanduser("~/.cache/delayed_flights/airports.json"),
+)
 
 AIRPORT_CACHE: dict[str, str] = {}
 
 
-def cache_airport(code: Optional[str], name: Optional[str] = None, city: Optional[str] = None) -> None:
-    """Cache airport display label dynamically from API data."""
+def load_airport_cache(filepath: str = AIRPORT_CACHE_FILE) -> dict[str, str]:
+    """Load persistent airport cache from disk into AIRPORT_CACHE."""
+    global AIRPORT_CACHE
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    AIRPORT_CACHE.update(data)
+        except Exception:
+            pass
+    return AIRPORT_CACHE
+
+
+def save_airport_cache(filepath: str = AIRPORT_CACHE_FILE) -> None:
+    """Save in-memory AIRPORT_CACHE to disk to avoid repeated API lookups."""
+    if not AIRPORT_CACHE:
+        return
+    try:
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(AIRPORT_CACHE, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def cache_airport(code: Optional[str], name: Optional[str] = None, city: Optional[str] = None, persist: bool = True) -> None:
+    """Cache airport display label dynamically from API data and save to disk."""
     if not code:
         return
     code_upper = code.strip().upper()
     display = name or city
-    if display:
+    if display and AIRPORT_CACHE.get(code_upper) != display:
         AIRPORT_CACHE[code_upper] = display
+        if persist:
+            save_airport_cache()
 
 
 def fetch_airport_info(
@@ -74,7 +107,7 @@ def fetch_airport_info(
     api_key: str,
     airport_code: str,
 ) -> dict[str, Any]:
-    """Fetch airport details from GET /airports/{id} and cache the official name/city."""
+    """Fetch airport details from GET /airports/{id} and cache to disk if not present."""
     code_upper = airport_code.strip().upper()
     if code_upper in AIRPORT_CACHE:
         return {"name": AIRPORT_CACHE[code_upper]}
@@ -93,6 +126,7 @@ def fetch_airport_info(
                     AIRPORT_CACHE[data["code_icao"].upper()] = display
                 if data.get("code_iata"):
                     AIRPORT_CACHE[data["code_iata"].upper()] = display
+                save_airport_cache()
             return data
     except Exception:
         pass
@@ -100,7 +134,7 @@ def fetch_airport_info(
 
 
 def airport_label(code: Optional[str], name: Optional[str] = None, city: Optional[str] = None) -> str:
-    """Return 'CODE (Airport Name / City)' or just 'CODE' dynamically from AeroAPI data."""
+    """Return 'CODE (Airport Name / City)' or just 'CODE' using dynamic & cached AeroAPI data."""
     if not code:
         return "Unknown"
     code_upper = code.strip().upper()
@@ -858,6 +892,7 @@ def print_header(airport: str, start: datetime, end: datetime,
 
 def main(argv: Optional[list[str]] = None) -> int:
     load_dotenv()
+    load_airport_cache()
 
     parser = build_parser()
     try:

@@ -572,3 +572,16 @@ class TestAirportDynamic:
         assert info["name"] == "Tenerife South Airport"
         assert df.AIRPORT_CACHE.get("TFS") == "Tenerife South Airport"
         assert df.AIRPORT_CACHE.get("GCTS") == "Tenerife South Airport"
+
+    def test_persistent_cache_save_and_load(self, tmp_path):
+        cache_file = str(tmp_path / "test_airports.json")
+        df.AIRPORT_CACHE["GDN"] = "Gdansk Lech Walesa"
+        df.save_airport_cache(filepath=cache_file)
+
+        # Clear memory cache and reload from disk
+        df.AIRPORT_CACHE.clear()
+        assert "GDN" not in df.AIRPORT_CACHE
+
+        loaded = df.load_airport_cache(filepath=cache_file)
+        assert loaded.get("GDN") == "Gdansk Lech Walesa"
+        assert df.AIRPORT_CACHE.get("GDN") == "Gdansk Lech Walesa"
