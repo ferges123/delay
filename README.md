@@ -1,89 +1,89 @@
 # Delay (v0.0.1)
 
-A Python 3 CLI tool that queries **FlightAware AeroAPI v4** to find upcoming or past delayed departures at a given airport.
+CLI & Daemon tool in Python 3 querying **FlightAware AeroAPI v4** to track delayed flight departures with instant **Telegram Bot** alerts.
 
 ---
 
-## How it works
-
-The tool operates in two main modes:
+## Features
 
 1. **Upcoming mode (default)**:
-   - Endpoint: `GET /airports/{id}/flights/scheduled_departures`
-   - Window: next **9 hours** from current time
-   - Condition: flights that have not yet reached their scheduled takeoff time (`scheduled_off >= now`) and have a planned departure delay (`departure_delay >= --min-delay`).
+   - Scans departures for the next **N hours** (`-w` / `--hours`, default: 6h)
+   - Filters only flights that haven't departed yet according to schedule (`scheduled_off >= now`)
+   - Identifies planned delays (`departure_delay >= --min-delay`)
 
 2. **Past mode (`-p` / `--past`)**:
-   - Endpoint: `GET /airports/{id}/flights/departures`
-   - Window: last **24 hours** (or custom `--start`/`--end` 24h window)
-   - Condition: departed flights where `actual_off - scheduled_off >= --min-delay`.
+   - Scans actual departures in the last **24 hours** (or custom `--start`/`--end`)
+   - Verifies actual delays (`actual_off - scheduled_off >= --min-delay`)
 
-Times are displayed in **UTC** alongside the airport's **local time** (e.g. `14:35 UTC (16:35 CEST)`).
+3. **Daemon / Monitor mode (`-d` / `--daemon`)**:
+   - Runs continuously in the background
+   - Periodically checks the airport every **N minutes** (`-i` / `--interval`, default: 30m)
+   - Checks the next **W hours** (`-w` / `--hours`, default: 6h)
+   - Sends Telegram notifications immediately when new delayed flights appear (with deduplication)
 
----
-
-## Requirements
-
-- Python 3.8+
-- FlightAware AeroAPI key (Personal plan or higher)
-
----
-
-## Installation & Setup
-
-```bash
-# Clone / navigate to directory
-cd /opt/delay
-
-# Create virtual environment and install dependencies
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Configure API Key
-cp .env.example .env
-# Edit .env and set your key: FLIGHTAWARE_API_KEY=your_key_here
-```
-
-### Alias configuration
-
-Add an alias to `~/.bashrc`:
-```bash
-alias delay='/opt/delay/.venv/bin/python3 /opt/delay/delayed_flights.py'
-```
+4. **Telegram Bot Integration**:
+   - Formatted HTML alerts sent directly to your Telegram chat/channel
+   - Shows flight identifier, route, origin/destination, scheduled/estimated takeoff times, local times, and delay
 
 ---
 
-## Usage
+## Configuration (`.env`)
 
-If invoked without `-a`, the application displays the help message:
+Create or edit your `.env` file in the project folder:
+
 ```bash
-delay
+# FlightAware AeroAPI Key
+FLIGHTAWARE_API_KEY=your_aeroapi_key_here
+
+# Telegram Bot (Optional, for -d daemon alerts and --telegram)
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ
+TELEGRAM_CHAT_ID=123456789
 ```
 
-### 1. Upcoming delayed flights (Next 9 hours)
+> **How to get Telegram Bot credentials:**
+> 1. Message **@BotFather** on Telegram -> `/newbot` -> get `TELEGRAM_BOT_TOKEN`.
+> 2. Start a chat with your bot, then get your chat ID from **@userinfobot** -> `TELEGRAM_CHAT_ID`.
+
+---
+
+## Usage Examples
+
+### 1. Monitor / Daemon mode with Telegram alerts (`-d`)
 
 ```bash
-# Check planned delays for Warsaw Chopin
+# Monitor Warsaw Chopin every 30 min for delays in the next 6 hours
+delay -a WAW -d
+
+# Custom window: check next 8 hours every 15 minutes
+delay -a WAW -d -w 8 -i 15
+
+# Monitor with custom delay threshold (e.g. >= 45 min)
+delay -a LPA -d -w 6 -i 20 --min-delay 45
+```
+
+### 2. Single-run (Upcoming departures)
+
+```bash
+# Check planned delays for Warsaw in the next 6 hours
 delay -a WAW
 
-# Lower threshold (e.g. >= 30 min) and show all matching flights
-delay -a WAW --min-delay 30 --all
+# Check next 9 hours and show all matching flights
+delay -a WAW -w 9 --all
 
-# Output as JSON
+# Single run with Telegram alert
+delay -a WAW --telegram
+
+# JSON format
 delay -a WAW --json
 ```
 
-### 2. Past delayed flights (Last 24 hours)
+### 3. Past departures (`-p`)
 
 ```bash
 # Search actual delays in the last 24h
 delay -a WAW -p
 
-# All delayed flights in the last 24h
-delay -a LPA -p --all
-
-# Custom 24-hour window
+# Custom 24-hour historical window
 delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 ```
 
@@ -94,12 +94,14 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 | Option | Shorthand | Default | Description |
 |---|---|---|---|
 | `--airport` | `-a` | *None* | Airport IATA or ICAO code (required, e.g. `WAW`, `LPA`, `TFS`) |
+| `--daemon` | `-d` | *off* | Run continuous monitoring daemon |
+| `--hours` / `--window` | `-w` | `6` | Future window in hours for upcoming flights |
+| `--interval` | `-i` | `30` | Interval in minutes between checks in daemon mode |
 | `--past` | `-p` | *off* | Search past 24h for actual delayed departures |
+| `--telegram` | | *off* | Send alert to Telegram for delayed flights |
 | `--min-delay` | | `60` | Minimum delay threshold in minutes |
 | `--all` | | *off* | Return all delayed flights instead of stopping after first |
 | `--json` | | *off* | Format output as JSON |
-| `--start` | | *None* | Start ISO8601 datetime (past mode only) |
-| `--end` | | *None* | End ISO8601 datetime (past mode only) |
 | `--version` | | | Show version number (`0.0.1`) |
 | `--help` | `-h` | | Show help message |
 
@@ -110,5 +112,3 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 ```bash
 pytest test_delayed_flights.py -v
 ```
-
-All API requests are mocked — no real API credits are consumed during tests.

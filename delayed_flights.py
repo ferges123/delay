@@ -5,12 +5,14 @@ delayed_flights.py – FlightAware AeroAPI v4 CLI for finding delayed departures
 VERSION 0.0.1
 
 Endpoints used (from OpenAPI spec v4.30.0):
-  GET /airports/{id}/flights/scheduled_departures   ← default: next 9 h, planned delays
+  GET /airports/{id}/flights/scheduled_departures   ← default / daemon: upcoming planned delays
   GET /airports/{id}/flights/departures             ← --past: last 24 h, actual delays
 
-Auth header : x-apikey
-Pagination  : links.next  → ?cursor=…
-Date range  : within 10 days past and 2 days future
+Features:
+  - Upcoming mode: scans future departures (scheduled_off >= now)
+  - Past mode (-p): scans departures in the last 24 h
+  - Daemon mode (-d): continuously checks every N minutes (default: 30m) for delays in next W hours (default: 6h)
+  - Telegram integration: sends alerts to Telegram bot when configured via .env / CLI
 """
 from __future__ import annotations
 
@@ -43,11 +45,12 @@ VERSION = "0.0.1"
 # Constants
 # ---------------------------------------------------------------------------
 
-BASE_URL         = "https://aeroapi.flightaware.com/aeroapi"
+BASE_URL          = "https://aeroapi.flightaware.com/aeroapi"
 DEFAULT_MIN_DELAY = 60      # minutes
 REQUEST_TIMEOUT   = 30      # seconds
 MAX_HISTORY_DAYS  = 10      # AeroAPI personal plan limit
-DEFAULT_FUTURE_H  = 9       # hours ahead for default (scheduled) mode
+DEFAULT_FUTURE_H  = 6       # hours ahead for upcoming / daemon mode
+DEFAULT_INTERVAL  = 30      # minutes between checks in daemon mode
 
 # ---------------------------------------------------------------------------
 # Airport label lookup – accepts IATA (3-letter) or ICAO (4-letter) codes.
@@ -173,18 +176,18 @@ class Flight:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "ident":               self.ident,
-            "ident_iata":          self.ident_iata,
-            "ident_icao":          self.ident_icao,
-            "origin":              airport_label(self.origin_code, self.origin_name, self.origin_city),
-            "origin_timezone":     self.origin_tz,
-            "destination":         airport_label(self.destination_code, self.destination_name, self.destination_city),
-            "destination_timezone":self.destination_tz,
-            "scheduled_off":       self._fmt(self.scheduled_off),
-            "estimated_off":       self._fmt(self.estimated_off) if self.estimated_off else None,
-            "actual_off":          self._fmt(self.actual_off)    if self.actual_off    else None,
-            "delay_minutes":       self.delay_minutes,
-            "mode":                "past" if self.is_past else "upcoming",
+            "ident":                self.ident,
+            "ident_iata":           self.ident_iata,
+            "ident_icao":           self.ident_icao,
+            "origin":               airport_label(self.origin_code, self.origin_name, self.origin_city),
+            "origin_timezone":      self.origin_tz,
+            "destination":          airport_label(self.destination_code, self.destination_name, self.destination_city),
+            "destination_timezone": self.destination_tz,
+            "scheduled_off":        self._fmt(self.scheduled_off),
+            "estimated_off":        self._fmt(self.estimated_off) if self.estimated_off else None,
+            "actual_off":           self._fmt(self.actual_off)    if self.actual_off    else None,
+            "delay_minutes":        self.delay_minutes,
+            "mode":                 "past" if self.is_past else "upcoming",
         }
 
     def display(self, label: str = "DELAYED FLIGHT") -> str:
@@ -226,6 +229,70 @@ class Stats:
 
 
 # ---------------------------------------------------------------------------
+# Telegram integration
+# ---------------------------------------------------------------------------
+
+def get_telegram_config() -> tuple[Optional[str], Optional[str]]:
+    """Retrieve Telegram bot token and chat ID from environment if configured."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
+    chat_id   = os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None
+    return bot_token, chat_id
+
+
+def format_telegram_flight(flight: Flight) -> str:
+    """Format flight details into a rich HTML Telegram message."""
+    origin_lbl = airport_label(flight.origin_code, flight.origin_name, flight.origin_city)
+    dest_lbl   = airport_label(flight.destination_code, flight.destination_name, flight.destination_city)
+
+    title = "⚠️ <b>OPÓŹNIONY ODLOT</b>" if flight.is_past else "⏳ <b>PLANOWANE OPÓŹNIENIE ODLOTU</b>"
+
+    lines = [
+        title,
+        "",
+        f"✈️ <b>Lot:</b> <code>{flight.ident}</code>",
+    ]
+    if flight.ident_iata and flight.ident_iata != flight.ident:
+        lines.append(f"🏷️ <b>IATA:</b> {flight.ident_iata}")
+    lines.append(f"🛫 <b>Skąd:</b> {origin_lbl}")
+    lines.append(f"🛬 <b>Dokąd:</b> {dest_lbl}")
+    if flight.scheduled_off:
+        lines.append(f"🕒 <b>Planowy start:</b> {flight._fmt(flight.scheduled_off)}")
+    if flight.estimated_off:
+        lines.append(f"⏱️ <b>Szacowany start:</b> {flight._fmt(flight.estimated_off)}")
+    if flight.actual_off:
+        lines.append(f"🚀 <b>Faktyczny start:</b> {flight._fmt(flight.actual_off)}")
+    lines.append(f"🚨 <b>Opóźnienie:</b> <b>+{flight.delay_minutes} min</b>")
+    return "\n".join(lines)
+
+
+def send_telegram_message(
+    bot_token: str,
+    chat_id: str,
+    text: str,
+    session: Optional[requests.Session] = None,
+    parse_mode: str = "HTML",
+) -> bool:
+    """Send a message to Telegram via Bot API."""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    }
+    s = session or requests.Session()
+    try:
+        resp = s.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        if resp.status_code == 200:
+            return True
+        print(f"Telegram API error ({resp.status_code}): {resp.text}", file=sys.stderr)
+        return False
+    except Exception as exc:
+        print(f"Telegram connection error: {exc}", file=sys.stderr)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Typed error hierarchy
 # ---------------------------------------------------------------------------
 
@@ -264,22 +331,27 @@ class ValidationError(AppError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="delay",
-        description=f"delayed_flights v{VERSION} – FlightAware AeroAPI v4 departure delay finder.",
+        description=f"delayed_flights v{VERSION} – FlightAware AeroAPI v4 departure delay finder & Telegram notifier.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 modes:
-  (default)  Upcoming departures in the next 9 h with a planned delay.
-             Uses: GET /airports/{{id}}/flights/scheduled_departures
-  -p/--past  Actual delayed departures in the last 24 h.
-             Uses: GET /airports/{{id}}/flights/departures
+  (default)  Upcoming departures in the next N hours (default: 6h) with planned delay.
+             Uses: GET /airports/{id}/flights/scheduled_departures
+  -p/--past  Actual delayed departures in the last 24h.
+             Uses: GET /airports/{id}/flights/departures
+  -d/--daemon Run continuously in monitoring mode, checking every N minutes and alerting to Telegram.
 
 examples:
-  delay -a WAW                          # planned delays, next 9 h
-  delay -a WAW -p                       # actual delays, last 24 h
-  delay -a LPA -p --all                 # all actual delayed, last 24 h
+  delay -a WAW                          # planned delays in next 6h
+  delay -a WAW -w 9                     # planned delays in next 9h
+  delay -a WAW -d                       # daemon mode: check WAW every 30m, alert to Telegram
+  delay -a WAW -d -w 6 -i 15            # daemon mode: next 6h window, check every 15m
+  delay -a WAW -p                       # actual delays, last 24h
+  delay -a LPA -p --all                 # all actual delayed, last 24h
   delay -a STN --min-delay 30           # planned delay >= 30 min
   delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
-  delay -a WAW --json
+  delay -a WAW --telegram               # send single run results to Telegram
+  delay -a WAW --json                   # JSON output
         """,
     )
     parser.add_argument(
@@ -289,6 +361,22 @@ examples:
     parser.add_argument(
         "-p", "--past", action="store_true", dest="past",
         help="Past mode: show actual delayed departures in the last 24 h.",
+    )
+    parser.add_argument(
+        "-d", "--daemon", action="store_true", dest="daemon",
+        help="Daemon mode: monitor airport periodically and send alerts to Telegram.",
+    )
+    parser.add_argument(
+        "-w", "--hours", "--window", type=int, default=DEFAULT_FUTURE_H, metavar="HOURS", dest="hours",
+        help=f"Future window in hours for upcoming flights (default: {DEFAULT_FUTURE_H}h).",
+    )
+    parser.add_argument(
+        "-i", "--interval", type=int, default=DEFAULT_INTERVAL, metavar="MINUTES", dest="interval",
+        help=f"Daemon check interval in minutes (default: {DEFAULT_INTERVAL}m).",
+    )
+    parser.add_argument(
+        "--telegram", action="store_true", dest="telegram",
+        help="Send delayed flights alerts to Telegram (requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID).",
     )
     parser.add_argument(
         "--start", metavar="ISO8601",
@@ -304,7 +392,7 @@ examples:
     )
     parser.add_argument(
         "--all", action="store_true", dest="show_all",
-        help="Show all matching flights (default: stop after first).",
+        help="Show all matching flights (default: stop after first in one-shot mode).",
     )
     parser.add_argument(
         "--json", action="store_true", dest="output_json",
@@ -346,10 +434,10 @@ def past_window() -> tuple[datetime, datetime]:
     return now - timedelta(hours=24), now
 
 
-def upcoming_window() -> tuple[datetime, datetime]:
-    """Now to now + DEFAULT_FUTURE_H hours."""
+def upcoming_window(hours: int = DEFAULT_FUTURE_H) -> tuple[datetime, datetime]:
+    """Now to now + hours."""
     now = datetime.now(tz=timezone.utc)
-    return now, now + timedelta(hours=DEFAULT_FUTURE_H)
+    return now, now + timedelta(hours=hours)
 
 
 def validate_past_window(start: datetime, end: datetime) -> None:
@@ -460,7 +548,7 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
 
 
 def _build_flight(raw: dict, airport: str, is_past: bool) -> Optional[Flight]:
-    """Parse a raw API flight dict into a Flight. Returns None if delay < 0."""
+    """Parse a raw API flight dict into a Flight. Returns None if delay cannot be determined."""
     origin      = raw.get("origin") or {}
     destination = raw.get("destination") or {}
 
@@ -474,8 +562,7 @@ def _build_flight(raw: dict, airport: str, is_past: bool) -> Optional[Flight]:
             return None
         delay_minutes = int((actual_off - scheduled_off).total_seconds() / 60)
     else:
-        # Planned delay from API field (seconds → minutes)
-        # departure_delay is based on estimated vs scheduled gate/runway time
+        # Planned delay from API field departure_delay (seconds → minutes)
         dep_delay_sec = raw.get("departure_delay")
         if dep_delay_sec is None:
             return None
@@ -571,18 +658,15 @@ def iter_upcoming_delayed(
     stop_at_first: bool,
     stats: Stats,
 ) -> Iterator[Flight]:
-    """Paginate GET /airports/{id}/flights/scheduled_departures, yield planned delayed flights.
-
-    Only flights whose scheduled_off >= now are returned – i.e. flights that
-    have not yet reached their planned departure time.  Flights already overdue
-    per schedule (scheduled_off < now) are skipped even if the API still lists
-    them as 'scheduled'.
+    """
+    Paginate GET /airports/{id}/flights/scheduled_departures, yield planned delayed flights.
+    Only flights whose scheduled_off >= now are returned (haven't yet departed according to schedule).
     """
     url    = f"{BASE_URL}/airports/{airport}/flights/scheduled_departures"
     cursor: Optional[str] = None
 
     while True:
-        now_utc = datetime.now(tz=timezone.utc)   # re-check each page
+        now_utc = datetime.now(tz=timezone.utc)
 
         params: dict[str, Any] = {
             "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -604,7 +688,7 @@ def iter_upcoming_delayed(
                 stats.flights_skipped += 1
                 continue
 
-            # Core condition: scheduled takeoff must still be in the future.
+            # Core condition: scheduled takeoff must still be in the future
             if flight.scheduled_off is None or flight.scheduled_off < now_utc:
                 stats.flights_skipped += 1
                 continue
@@ -621,6 +705,77 @@ def iter_upcoming_delayed(
         cursor = _next_cursor(data)
         if not cursor:
             break
+
+
+# ---------------------------------------------------------------------------
+# Daemon / Monitoring mode
+# ---------------------------------------------------------------------------
+
+def run_daemon_loop(
+    session: requests.Session,
+    api_key: str,
+    airport: str,
+    hours: int,
+    interval_minutes: int,
+    min_delay: int,
+    bot_token: Optional[str],
+    chat_id: Optional[str],
+) -> None:
+    """Continuous monitor loop checking every `interval_minutes` for delayed flights."""
+    city  = AIRPORT_CITY.get(airport.upper(), "")
+    label = f"{airport} ({city})" if city else airport
+
+    print(f"\n🚀 [DAEMON] Uruchomiono monitorowanie opóźnień dla {label}")
+    print(f"  Okno przyszłości:   +{hours} h")
+    print(f"  Częstotliwość:      co {interval_minutes} min")
+    print(f"  Minimalne opóźnienie: >= {min_delay} min")
+    if bot_token and chat_id:
+        print(f"  Powiadomienia:      Telegram (chat_id: {chat_id})")
+    else:
+        print("  Powiadomienia:      Tylko konsola (brak TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
+    print("  Naciśnij Ctrl+C aby zatrzymać monitorowanie.\n")
+
+    notified_flights: set[str] = set()
+
+    while True:
+        cycle_start = datetime.now(tz=timezone.utc)
+        start = cycle_start
+        end   = cycle_start + timedelta(hours=hours)
+        ts_str = cycle_start.strftime("%Y-%m-%d %H:%M:%S UTC")
+        print(f"[{ts_str}] Sprawdzam odloty {airport} w oknie {start.strftime('%H:%M')} – {end.strftime('%H:%M UTC')}…")
+
+        stats = Stats()
+        try:
+            for flight in iter_upcoming_delayed(
+                session, api_key, airport, start, end, min_delay, stop_at_first=False, stats=stats
+            ):
+                flight_key = f"{flight.ident}_{flight.scheduled_off.isoformat() if flight.scheduled_off else ''}_{flight.delay_minutes}"
+                if flight_key not in notified_flights:
+                    notified_flights.add(flight_key)
+                    print(f"\n🚨 NOWE OPÓŹNIENIE ZNALEZIONE: {flight.ident} (+{flight.delay_minutes} min)")
+                    print(flight.display("UPCOMING DELAYED FLIGHT"))
+                    print()
+
+                    if bot_token and chat_id:
+                        msg = format_telegram_flight(flight)
+                        success = send_telegram_message(bot_token, chat_id, msg, session=session)
+                        if success:
+                            print(f"  ✓ Wysłano powiadomienie Telegram dla {flight.ident}")
+                        else:
+                            print(f"  ✗ Błąd wysyłania powiadomienia Telegram dla {flight.ident}", file=sys.stderr)
+
+            print(f"  Przeanalizowano {stats.flights_analyzed} lotów, znaleziono opóźnionych: {stats.flights_found}.")
+
+        except AppError as err:
+            print(f"  [BŁĄD API w cyklu]: {err}", file=sys.stderr)
+        except Exception as exc:
+            print(f"  [BŁĄD w cyklu]: {exc}", file=sys.stderr)
+
+        print(f"  Kolejne sprawdzenie za {interval_minutes} minut…\n")
+        # Sleep in 1-second chunks to exit immediately on Ctrl+C
+        sleep_seconds = interval_minutes * 60
+        for _ in range(sleep_seconds):
+            time.sleep(1)
 
 
 # ---------------------------------------------------------------------------
@@ -655,13 +810,36 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     try:
-        api_key = _get_api_key()
-        airport = args.airport.strip().upper()
-        min_delay  = args.min_delay
-        stop_first = not args.show_all
+        api_key   = _get_api_key()
+        airport   = args.airport.strip().upper()
+        min_delay = args.min_delay
+        hours     = max(args.hours, 1)
+        interval  = max(args.interval, 1)
 
+        bot_token, chat_id = get_telegram_config()
+
+        # ── DAEMON MODE ───────────────────────────────────────────────────
+        if args.daemon:
+            if args.past:
+                raise ValidationError("Cannot combine --daemon with --past.")
+            if args.start or args.end:
+                raise ValidationError("Cannot combine --daemon with --start/--end.")
+
+            with requests.Session() as session:
+                run_daemon_loop(
+                    session=session,
+                    api_key=api_key,
+                    airport=airport,
+                    hours=hours,
+                    interval_minutes=interval,
+                    min_delay=min_delay,
+                    bot_token=bot_token,
+                    chat_id=chat_id,
+                )
+            return 0
+
+        # ── PAST MODE ─────────────────────────────────────────────────────
         if args.past:
-            # ── PAST MODE ─────────────────────────────────────────────────
             if args.start or args.end:
                 if not (args.start and args.end):
                     raise ValidationError("Both --start and --end must be provided together.")
@@ -679,24 +857,26 @@ def main(argv: Optional[list[str]] = None) -> int:
             mode_label  = "PAST – actual delayed departures (last 24 h)"
             mode_key    = "past"
             iterator_fn = iter_past_delayed
+            stop_first  = not args.show_all
 
+        # ── UPCOMING ONE-SHOT MODE ────────────────────────────────────────
         else:
-            # ── UPCOMING MODE ─────────────────────────────────────────────
             if args.start or args.end:
                 raise ValidationError(
                     "--start/--end are only supported with -p/--past. "
-                    f"Upcoming mode always uses the next {DEFAULT_FUTURE_H} hours."
+                    f"Upcoming mode always uses the next {hours} hours."
                 )
-            start, end = upcoming_window()
+            start, end = upcoming_window(hours=hours)
             print(
                 f"Upcoming: {start.strftime('%Y-%m-%dT%H:%M:%SZ')} → "
                 f"{end.strftime('%Y-%m-%dT%H:%M:%SZ')}",
                 file=sys.stderr,
             )
 
-            mode_label  = f"UPCOMING – planned delayed departures (next {DEFAULT_FUTURE_H} h)"
+            mode_label  = f"UPCOMING – planned delayed departures (next {hours} h)"
             mode_key    = "upcoming"
             iterator_fn = iter_upcoming_delayed
+            stop_first  = not args.show_all
 
         if not args.output_json:
             print_header(airport, start, end, min_delay, mode_label)
@@ -713,19 +893,28 @@ def main(argv: Optional[list[str]] = None) -> int:
                     label = "FOUND DELAYED FLIGHT" if args.past else "UPCOMING DELAYED FLIGHT"
                     print(flight.display(label))
                     print()
+
+                # Optional Telegram dispatch in one-shot mode
+                if args.telegram:
+                    if not (bot_token and chat_id):
+                        raise ConfigError(
+                            "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env to use --telegram."
+                        )
+                    send_telegram_message(bot_token, chat_id, format_telegram_flight(flight), session=session)
+
                 if stop_first:
                     break
 
         if args.output_json:
             result = {
-                "version":          VERSION,
-                "airport":          airport,
-                "mode":             mode_key,
-                "window_start":     start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "window_end":       end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "min_delay_minutes":min_delay,
-                "flights_found":    stats.flights_found,
-                "flights":          [f.to_dict() for f in found_flights],
+                "version":           VERSION,
+                "airport":           airport,
+                "mode":              mode_key,
+                "window_start":      start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "window_end":        end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "min_delay_minutes": min_delay,
+                "flights_found":     stats.flights_found,
+                "flights":           [f.to_dict() for f in found_flights],
                 "stats": {
                     "requests_made":    stats.requests_made,
                     "flights_analyzed": stats.flights_analyzed,
@@ -744,8 +933,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return exc.exit_code
     except KeyboardInterrupt:
-        print("\nInterrupted.", file=sys.stderr)
-        return 130
+        print("\nZatrzymano monitorowanie (Ctrl+C).", file=sys.stderr)
+        return 0
 
 
 if __name__ == "__main__":
