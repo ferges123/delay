@@ -38,3 +38,4 @@ airports.json
 .daemon.pid
 *.log
 daemon.log
+delay_history.csv

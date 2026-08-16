@@ -17,6 +17,7 @@ Features:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import signal
@@ -128,6 +129,8 @@ def fetch_airport_info(
                     AIRPORT_CACHE[data["code_icao"].upper()] = display
                 if data.get("code_iata"):
                     AIRPORT_CACHE[data["code_iata"].upper()] = display
+                if data.get("code_icao") and data.get("code_iata"):
+                    AIRPORT_CACHE[f"IATA_FOR_{data['code_icao'].upper()}"] = data["code_iata"].upper()
                 save_airport_cache()
             return data
     except Exception:
@@ -140,11 +143,12 @@ def airport_label(code: Optional[str], name: Optional[str] = None, city: Optiona
     if not code:
         return "Unknown"
     code_upper = code.strip().upper()
+    display_code = AIRPORT_CACHE.get(f"IATA_FOR_{code_upper}") or code_upper
     display = name or city or AIRPORT_CACHE.get(code_upper)
     if display:
         cache_airport(code_upper, display)
-        return f"{code} ({display})"
-    return code
+        return f"{display_code} ({display})"
+    return display_code
 
 
 def fmt_local(dt: Optional[datetime], tz_name: Optional[str]) -> str:
@@ -169,6 +173,139 @@ def fmt_local(dt: Optional[datetime], tz_name: Optional[str]) -> str:
         except (ZoneInfoNotFoundError, Exception):
             pass
     return utc_str
+
+
+# ---------------------------------------------------------------------------
+# CSV History Log
+# ---------------------------------------------------------------------------
+
+DEFAULT_HISTORY_FILE = os.path.join(SCRIPT_DIR, "delay_history.csv")
+HISTORY_FILE = os.environ.get("DELAY_HISTORY_FILE", DEFAULT_HISTORY_FILE)
+
+HISTORY_COLUMNS = [
+    "check_time",
+    "mode",
+    "airport",
+    "flight",
+    "origin",
+    "destination",
+    "scheduled_off",
+    "estimated_off",
+    "actual_off",
+    "delay_min",
+]
+
+
+def _ensure_history_header(filepath: Optional[str] = None) -> None:
+    """Create CSV file with header row if it doesn't exist yet."""
+    filepath = filepath or HISTORY_FILE
+    if os.path.exists(filepath):
+        return
+    try:
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(HISTORY_COLUMNS)
+    except Exception:
+        pass
+
+
+def _fmt_utc(dt: Optional[datetime]) -> str:
+    """Format datetime as compact UTC string for CSV, or empty string."""
+    if dt is None:
+        return ""
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def append_to_history(
+    flight: "Flight",
+    mode: str,
+    airport: str,
+    filepath: Optional[str] = None,
+) -> None:
+    """Append one delayed flight record to the CSV history file."""
+    filepath = filepath or HISTORY_FILE
+    _ensure_history_header(filepath)
+    try:
+        with open(filepath, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                mode,
+                airport,
+                flight.ident_iata or flight.ident,
+                airport_label(flight.origin_code, flight.origin_name, flight.origin_city),
+                airport_label(flight.destination_code, flight.destination_name, flight.destination_city),
+                _fmt_utc(flight.scheduled_off),
+                _fmt_utc(flight.estimated_off),
+                _fmt_utc(flight.actual_off),
+                flight.delay_minutes,
+            ])
+    except Exception as exc:
+        print(f"  [history] Warning: could not write to {filepath}: {exc}", file=sys.stderr)
+
+
+def display_history(filepath: Optional[str] = None, tail: int = 30, airport: Optional[str] = None) -> int:
+    """Print recent CSV history in a human-readable table format, optionally filtered by airport."""
+    filepath = filepath or HISTORY_FILE
+    if not os.path.exists(filepath):
+        print(f"No history file found ({filepath}).")
+        print("History is recorded automatically when delayed flights are found.")
+        return 0
+
+    try:
+        with open(filepath, "r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+    except Exception as exc:
+        print(f"Error reading history: {exc}", file=sys.stderr)
+        return 1
+
+    if len(rows) <= 1:
+        print("History file is empty (no delayed flights recorded yet).")
+        return 0
+
+    header = rows[0]
+    data   = rows[1:]
+
+    # Filter by airport if specified
+    if airport:
+        airport_upper = airport.strip().upper()
+        try:
+            airport_col = header.index("airport")
+        except ValueError:
+            airport_col = 2  # fallback
+        data = [row for row in data if len(row) > airport_col and row[airport_col].strip().upper() == airport_upper]
+        if not data:
+            print(f"No history entries for airport {airport_upper}.")
+            return 0
+
+    total = len(data)
+
+    # Show last N entries
+    if len(data) > tail:
+        data = data[-tail:]
+        print(f"(showing last {tail} of {total} entries)\n")
+
+    # Calculate column widths for pretty printing
+    all_rows = [header] + data
+    col_widths = [max(len(str(row[i])) for row in all_rows if i < len(row))
+                  for i in range(len(header))]
+
+    # Print header
+    header_line = "  ".join(h.ljust(w) for h, w in zip(header, col_widths))
+    print(header_line)
+    print("─" * len(header_line))
+
+    # Print data rows
+    for row in data:
+        padded = [str(row[i]).ljust(col_widths[i]) if i < len(row) else " " * col_widths[i]
+                  for i in range(len(header))]
+        print("  ".join(padded))
+
+    filter_msg = f" for {airport.strip().upper()}" if airport else ""
+    print(f"\n({total} entries{filter_msg} in {filepath})")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +337,7 @@ class Flight:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "ident":                self.ident,
+            "ident":                self.ident_iata or self.ident,
             "ident_iata":           self.ident_iata,
             "ident_icao":           self.ident_icao,
             "origin":               airport_label(self.origin_code, self.origin_name, self.origin_city),
@@ -216,10 +353,11 @@ class Flight:
 
     def display(self, label: str = "DELAYED FLIGHT") -> str:
         lines = [label, ""]
-        lines.append(f"  Flight:            {self.ident}")
-        if self.ident_iata and self.ident_iata != self.ident:
+        display_ident = self.ident_iata or self.ident
+        lines.append(f"  Flight:            {display_ident}")
+        if self.ident_iata and self.ident_iata != display_ident:
             lines.append(f"  Flight (IATA):     {self.ident_iata}")
-        if self.ident_icao and self.ident_icao != self.ident:
+        if self.ident_icao and self.ident_icao != display_ident:
             lines.append(f"  Flight (ICAO):     {self.ident_icao}")
         lines.append(f"  Origin:            {airport_label(self.origin_code, self.origin_name, self.origin_city)}")
         lines.append(f"  Destination:       {airport_label(self.destination_code, self.destination_name, self.destination_city)}")
@@ -270,12 +408,14 @@ def format_telegram_flight(flight: Flight) -> str:
 
     title = "⚠️ <b>DELAYED DEPARTURE</b>" if flight.is_past else "⏳ <b>PLANNED DEPARTURE DELAY</b>"
 
+    display_ident = flight.ident_iata or flight.ident
+
     lines = [
         title,
         "",
-        f"✈️ <b>Flight:</b> <code>{flight.ident}</code>",
+        f"✈️ <b>Flight:</b> <code>{display_ident}</code>",
     ]
-    if flight.ident_iata and flight.ident_iata != flight.ident:
+    if flight.ident_iata and flight.ident_iata != display_ident:
         lines.append(f"🏷️ <b>IATA:</b> {flight.ident_iata}")
     lines.append(f"🛫 <b>Origin:</b> {origin_lbl}")
     lines.append(f"🛬 <b>Destination:</b> {dest_lbl}")
@@ -408,6 +548,7 @@ examples:
   delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
   delay -a WAW -t                       # send single run results to Telegram (-t)
   delay -a WAW --json                   # JSON output
+  delay --history                       # show recent delay history from CSV log
         """,
     )
     parser.add_argument(
@@ -473,6 +614,14 @@ examples:
     parser.add_argument(
         "--json", action="store_true", dest="output_json",
         help="Output results as JSON.",
+    )
+    parser.add_argument(
+        "--history", action="store_true", dest="history",
+        help="Show recent delay history from CSV log.",
+    )
+    parser.add_argument(
+        "--no-history", action="store_true", dest="no_history",
+        help="Disable CSV history logging for this run.",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {VERSION}",
@@ -644,13 +793,13 @@ def _build_flight(raw: dict, airport: str, is_past: bool) -> Optional[Flight]:
             return None
         delay_minutes = int(dep_delay_sec / 60)
 
-    origin_code = origin.get("code") or origin.get("code_icao") or airport
+    origin_code = origin.get("code_iata") or origin.get("code") or origin.get("code_icao") or airport
     origin_name = origin.get("name")
     origin_city = origin.get("city")
     if origin_code:
         cache_airport(origin_code, origin_name, origin_city)
 
-    dest_code = destination.get("code") or destination.get("code_icao")
+    dest_code = destination.get("code_iata") or destination.get("code") or destination.get("code_icao")
     dest_name = destination.get("name")
     dest_city = destination.get("city")
     if dest_code:
@@ -1006,6 +1155,9 @@ def run_daemon_loop(
                         print(flight.display("UPCOMING DELAYED FLIGHT"))
                         print()
 
+                        # Log to CSV history
+                        append_to_history(flight, mode="daemon", airport=airport)
+
                         if bot_token and chat_id:
                             msg = format_telegram_flight(flight)
                             success = send_telegram_message(bot_token, chat_id, msg, session=session)
@@ -1086,15 +1238,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     except SystemExit as exc:
         return int(exc.code) if exc.code is not None else 1
 
-    # ── MANAGEMENT COMMANDS (--stop, --status, --logs) ────────────────────
+    # ── MANAGEMENT COMMANDS (--stop, --status, --logs, --history) ─────────
     if args.stop:
         return handle_stop_daemon()
     if args.status:
         return handle_status_daemon()
     if args.logs:
         return handle_logs_daemon()
+    if args.history:
+        return display_history(airport=args.airport)
 
-    # Show help when no airport given (and not running --status/--logs/--stop)
+    # Show help when no airport given (and not running --status/--logs/--stop/--history)
     if not args.airport:
         parser.print_help()
         return 0
@@ -1191,6 +1345,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     label = "FOUND DELAYED FLIGHT" if args.past else "UPCOMING DELAYED FLIGHT"
                     print(flight.display(label))
                     print()
+
+                # Log to CSV history
+                if not args.no_history:
+                    append_to_history(flight, mode=mode_key, airport=airport)
 
                 # Optional Telegram dispatch in one-shot mode
                 if args.telegram:
