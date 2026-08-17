@@ -134,7 +134,7 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 | `--status` | | | Show status of running background daemon |
 | `--logs` | | | View recent logs from background daemon |
 | `--stop` | | | Stop running background daemon |
-| `--duration` | `-D` | *None* | Total runtime duration for daemon mode (e.g. `4`, `4h`, `30m`, `1d`) |
+| `--duration` | `-D` | `4h` | Total runtime duration for daemon mode (e.g. `4`, `4h`, `30m`, `1d`, `unlimited`) |
 | `--hours` / `--window` | `-w` | `6` | Future window in hours for upcoming flights |
 | `--interval` | `-i` | `30` | Interval in minutes between checks in daemon mode |
 | `--past` | `-p` | *off* | Search past 24h for actual delayed departures |
