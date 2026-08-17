@@ -18,15 +18,22 @@ CLI & Background Daemon tool in Python 3 querying **FlightAware AeroAPI v4** to 
 3. **Daemon / Monitor mode (`-d` / `--daemon`)**:
    - Runs continuously in the **background** by default (safe to close terminal)
    - Periodically checks the airport every **N minutes** (`-i` / `--interval`, default: 30m)
-   - Bounded runtime duration support (`-D` / `--duration`, e.g. `4h`, `30m`, `1d`)
+   - Bounded runtime duration support (`-D` / `--duration`, default: `4h`, e.g. `6h`, `30m`, `1d`, `unlimited`)
    - Sends Telegram notifications immediately when new delayed flights appear (with deduplication)
+   - Sends a summary notification on completion if no delayed flights were found during the monitoring window
    - Built-in management commands: `delay --status`, `delay --logs`, `delay --stop`
 
 4. **Dynamic Airport Resolution & Persistent Cache**:
    - Fetches official airport names, cities, and timezones directly from AeroAPI
+   - Preferentially resolves clean IATA codes (e.g. `TFS`, `WAW`, `LPA`)
    - Caches airport data locally on disk (`.airports_cache.json`) to conserve API credits
 
-5. **Telegram Bot Integration**:
+5. **CSV Delay History Logging**:
+   - Automatically logs all detected delayed flights to `delay_history.csv`
+   - Formatted 2-line terminal table viewer (`delay --history`, optionally filtered by airport `delay -a TFS --history`)
+   - Can be disabled for individual runs via `--no-history`
+
+6. **Telegram Bot Integration**:
    - Formatted HTML alerts sent directly to your Telegram chat/channel
    - Shows flight identifier, route, origin/destination, scheduled/estimated takeoff times, local times, and delay
 
@@ -77,8 +84,11 @@ TELEGRAM_CHAT_ID=123456789
 > **Note:** Daemon mode (`-d`) automatically runs in the background as a detached process, so you can safely close your terminal.
 
 ```bash
-# Monitor TFS in background for 4 hours (-D 4h) — safe to close terminal!
-delay -a TFS -d -D 4h
+# Monitor TFS in background for 6 hours with Telegram notifications (-t)
+delay -a TFS -d -D 6 -t
+
+# Monitor TFS in background with default 4h duration
+delay -a TFS -d -t
 
 # Check if background daemon is running + see recent logs
 delay --status
@@ -89,8 +99,11 @@ delay --logs
 # Stop the background daemon
 delay --stop
 
-# Monitor Warsaw Chopin in background for 8 hours total, checking every 15 min
-delay -a WAW -d -D 8h -i 15 -w 6
+# Monitor Warsaw Chopin in background for 8 hours, checking every 15 min
+delay -a WAW -d -D 8h -i 15 -w 6 -t
+
+# Run daemon continuously without time limit
+delay -a WAW -d -D unlimited -t
 
 # Run daemon in foreground (attached to terminal)
 delay -a WAW -d -f
@@ -122,6 +135,16 @@ delay -a WAW -p
 delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 ```
 
+### 4. Delay History Log (`--history`)
+
+```bash
+# View recent recorded delayed flights history
+delay --history
+
+# View history filtered for a specific airport
+delay -a TFS --history
+```
+
 ---
 
 ## CLI Options
@@ -142,13 +165,7 @@ delay -a TFS -p --start 2026-08-10T00:00:00Z --end 2026-08-11T00:00:00Z
 | `--min-delay` | | `60` | Minimum delay threshold in minutes |
 | `--all` | | *off* | Return all delayed flights instead of stopping after first |
 | `--json` | | *off* | Format output as JSON |
+| `--history` | | | Show recent delay history from CSV log |
+| `--no-history` | | *off* | Disable CSV history logging for this run |
 | `--version` | | | Show version number |
 | `--help` | `-h` | | Show help message |
-
----
-
-## Running Tests
-
-```bash
-pytest test_delayed_flights.py -v
-```
